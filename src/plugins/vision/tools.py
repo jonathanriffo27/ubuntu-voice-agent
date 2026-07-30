@@ -20,6 +20,13 @@ class AnalizarPantallaTool(BaseTool):
     def description(self) -> str:
         return "Captura lo que hay en la pantalla actual del usuario para que puedas analizar errores, código o cualquier contexto visual."
 
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "OBJECT",
+            "properties": {}
+        }
+
     async def execute(self, context: ToolContext, **kwargs) -> ToolResult:
         try:
             image_bytes = self.screen_service.capture_screen()
