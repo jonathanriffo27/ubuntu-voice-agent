@@ -7,6 +7,7 @@ import pyaudio
 from google import genai
 from google.genai import types
 import tools
+from src.providers.gemini import GeminiProvider
 
 AUDIO_FORMAT = pyaudio.paInt16
 AUDIO_CHANNELS = 1
@@ -392,7 +393,7 @@ async def main():
     # Calibración automática del micrófono
     silence_threshold = await calibrate_microphone(in_stream)
 
-    client = genai.Client()
+    provider = GeminiProvider(model_name=MODEL)
     
     # Construir prompt dinámico con ubicación y memoria
     sys_prompt, ubicacion, datos = build_system_prompt()
@@ -403,14 +404,6 @@ async def main():
         print(f"👤 Perfil cargado: {', '.join(f'{k}={v}' for k, v in perfil.items())}")
     if notas:
         print(f"💾 Notas cargadas: {len(notas)}")
-    
-    # La config MÁS restrictiva posible para Live API en 2.14
-    config = types.LiveConnectConfig(
-        response_modalities=[types.Modality.AUDIO],
-        speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Aoede"))),
-        system_instruction=types.Content(parts=[types.Part.from_text(text=sys_prompt)]),
-        tools=agent_tools
-    )
 
     q_in = asyncio.Queue()
     q_out = asyncio.Queue()
@@ -453,7 +446,7 @@ async def main():
                     except Exception:
                         pass
 
-        async with client.aio.live.connect(model=MODEL, config=config) as session:
+        async with provider.connect(system_prompt=sys_prompt, tools=agent_tools) as session:
             print("\n✅ Conexión establecida. Comienza a hablar.\n")
             
             # Enviar mensaje de texto inicial corregido
