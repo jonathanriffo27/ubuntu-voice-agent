@@ -11,7 +11,10 @@ class ConversationContext:
 @dataclass
 class Event:
     context: ConversationContext
-    timestamp: datetime = field(default_factory=datetime.now)
+    timestamp: datetime = field(init=False)
+
+    def __post_init__(self):
+        self.timestamp = datetime.now()
 
 # Domain Events
 @dataclass 

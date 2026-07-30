@@ -3,7 +3,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 
-from .base import BaseTool, ToolContext, ToolResult
+from src.tools.base import BaseTool, ToolContext, ToolResult
 
 class CommandResult:
     def __init__(self, exit_code: int, stdout: str, stderr: str, duration_ms: int):

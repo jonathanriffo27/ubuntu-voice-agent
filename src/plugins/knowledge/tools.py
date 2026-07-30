@@ -1,5 +1,5 @@
 from typing import Dict, Any
-from .base import BaseTool, ToolContext, ToolResult
+from src.tools.base import BaseTool, ToolContext, ToolResult
 from src.knowledge.manager import KnowledgeManager
 from src.events.base import KnowledgeUpdated
 
