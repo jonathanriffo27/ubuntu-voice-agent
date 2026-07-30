@@ -4,6 +4,7 @@ from src.providers.gemini import GeminiProvider
 from src.brain.assistant import Assistant
 from src.tools.registry import ToolRegistry
 from src.tools.legacy import get_legacy_tools
+from src.tools.shell import BashExecutor, CommandState, ProponerComandoTool, EjecutarComandoTool
 from src.config.loader import load_config
 
 API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -18,6 +19,12 @@ if __name__ == "__main__":
     registry = ToolRegistry()
     for tool in get_legacy_tools():
         registry.register(tool)
+        
+    # Inicializar herramientas nativas
+    shell_state = CommandState()
+    shell_executor = BashExecutor()
+    registry.register(ProponerComandoTool(state=shell_state))
+    registry.register(EjecutarComandoTool(executor=shell_executor, state=shell_state))
 
     # Inicializar el proveedor
     if config.provider.type == "gemini":

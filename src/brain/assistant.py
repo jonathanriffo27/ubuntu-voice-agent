@@ -10,6 +10,7 @@ import tools
 from src.providers.base import BaseProvider
 from src.brain.prompts import build_system_prompt
 from src.tools.registry import ToolRegistry
+from src.tools.base import ToolContext
 
 AUDIO_FORMAT = pyaudio.paInt16
 AUDIO_CHANNELS = 1
@@ -228,12 +229,18 @@ class Assistant:
                             tool = self.registry.get_tool(fc.name)
                             if tool:
                                 try:
-                                    res = await tool.execute(**args_dict)
-                                    if not isinstance(res, dict):
-                                        res = {"result": str(res)}
+                                    context = ToolContext(config=self.config)
+                                    tool_result = await tool.execute(context, **args_dict)
+                                    
+                                    # Formatear la respuesta para Gemini
+                                    res_dict = {"result": tool_result.content}
+                                    if tool_result.metadata:
+                                        res_dict.update(tool_result.metadata)
+                                    
                                     if fc.name != "obtener_estado_sistema":
-                                        print(f"📦 Herramienta {fc.name} completada")
-                                    responses.append(types.FunctionResponse(name=fc.name, id=fc.id, response=res))
+                                        print(f"📦 Herramienta {fc.name} completada (Success: {tool_result.success})")
+                                    
+                                    responses.append(types.FunctionResponse(name=fc.name, id=fc.id, response=res_dict))
                                 except Exception as e:
                                     print(f"\n[ERROR EN TOOL {fc.name}]: {e}")
                                     responses.append(types.FunctionResponse(name=fc.name, id=fc.id, response={"error": str(e)}))

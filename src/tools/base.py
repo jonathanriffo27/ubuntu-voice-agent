@@ -1,5 +1,18 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+from dataclasses import dataclass
+from src.config.models import AtlasConfig
+
+@dataclass
+class ToolContext:
+    config: AtlasConfig
+    # En el futuro: memory_manager, event_bus, etc.
+
+@dataclass
+class ToolResult:
+    success: bool
+    content: str
+    metadata: Dict[str, Any] = None
 
 class BaseTool(ABC):
     """
@@ -29,6 +42,6 @@ class BaseTool(ABC):
         pass
 
     @abstractmethod
-    async def execute(self, **kwargs) -> Any:
+    async def execute(self, context: ToolContext, **kwargs) -> ToolResult:
         """Lógica de ejecución asíncrona de la herramienta."""
         pass

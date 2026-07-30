@@ -1,6 +1,6 @@
 import asyncio
 from typing import Any, Dict, Callable
-from .base import BaseTool
+from .base import BaseTool, ToolContext, ToolResult
 import tools
 
 class LegacyToolWrapper(BaseTool):
@@ -26,9 +26,13 @@ class LegacyToolWrapper(BaseTool):
     def parameters(self) -> Dict[str, Any]:
         return self._parameters
 
-    async def execute(self, **kwargs) -> Any:
+    async def execute(self, context: ToolContext, **kwargs) -> ToolResult:
         # tools.py usa funciones síncronas, así que las ejecutamos en un thread.
-        return await asyncio.to_thread(self._func, **kwargs)
+        res = await asyncio.to_thread(self._func, **kwargs)
+        # Convertir a ToolResult
+        if isinstance(res, dict):
+            return ToolResult(success=True, content=str(res.get("result", res)), metadata=res)
+        return ToolResult(success=True, content=str(res))
 
 def get_legacy_tools() -> list[BaseTool]:
     """Retorna la lista de herramientas envueltas listas para el registro."""
@@ -38,18 +42,6 @@ def get_legacy_tools() -> list[BaseTool]:
             description="Obtiene la hora actual.",
             parameters=None,
             func=tools.obtener_estado_sistema
-        ),
-        LegacyToolWrapper(
-            name="proponer_comando",
-            description="Propone un comando de terminal.",
-            parameters={"type": "OBJECT", "properties": {"comando": {"type": "STRING", "description": "El comando bash exacto"}}, "required": ["comando"]},
-            func=tools.proponer_comando
-        ),
-        LegacyToolWrapper(
-            name="ejecutar_comando_confirmado",
-            description="Ejecuta el último comando de terminal propuesto.",
-            parameters=None,
-            func=tools.ejecutar_comando_confirmado
         ),
         LegacyToolWrapper(
             name="buscar_en_internet",
