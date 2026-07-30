@@ -1,5 +1,5 @@
-import tools
 from src.knowledge.manager import KnowledgeManager
+from src.tools.system import detect_user_location
 
 SYS_PROMPT_BASE = """Eres Atlas, un asistente de escritorio avanzado. Sé conciso. Reglas importantes:
 1. Cuando uses la herramienta 'buscar_en_internet' y recibas resultados, SIEMPRE basa tu respuesta en los datos obtenidos de la búsqueda.
@@ -16,7 +16,7 @@ MAX_MEMORY_PROMPT_CHARS = 1500
 
 def build_system_prompt(knowledge_manager: KnowledgeManager = None):
     """Construye el prompt del sistema con ubicación, perfil y memoria."""
-    ubicacion = tools.detect_user_location() or "ubicación desconocida"
+    ubicacion = detect_user_location() or "ubicación desconocida"
     prompt = SYS_PROMPT_BASE.format(ubicacion=ubicacion)
     
     perfil = knowledge_manager.get_profile() if knowledge_manager else {}

@@ -3,9 +3,10 @@ import sys
 from src.providers.gemini import GeminiProvider
 from src.brain.assistant import Assistant
 from src.tools.registry import ToolRegistry
-from src.tools.legacy import get_legacy_tools
 from src.tools.shell import BashExecutor, CommandState, ProponerComandoTool, EjecutarComandoTool
 from src.tools.knowledge import GuardarNotaTool, BorrarNotaTool, GuardarPerfilTool
+from src.tools.system import EstadoSistemaTool, ImprimirConsolaTool, AbrirAplicacionTool
+from src.tools.browser import BuscarEnInternetTool
 from src.knowledge.manager import KnowledgeManager
 from src.knowledge.backends.json import JsonKnowledgeBackend
 from src.config.loader import load_config
@@ -20,8 +21,12 @@ if __name__ == "__main__":
 
     # Inicializar el registro de herramientas
     registry = ToolRegistry()
-    for tool in get_legacy_tools():
-        registry.register(tool)
+    
+    # Herramientas del Sistema y Navegador
+    registry.register(EstadoSistemaTool())
+    registry.register(ImprimirConsolaTool())
+    registry.register(AbrirAplicacionTool())
+    registry.register(BuscarEnInternetTool())
         
     # Inicializar herramientas nativas de shell
     shell_state = CommandState()

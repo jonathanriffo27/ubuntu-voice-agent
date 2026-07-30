@@ -6,7 +6,6 @@ import struct
 import pyaudio
 import warnings
 from google.genai import types
-import tools
 from src.providers.base import BaseProvider
 from src.brain.prompts import build_system_prompt
 from src.tools.registry import ToolRegistry
