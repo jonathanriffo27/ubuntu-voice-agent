@@ -1,41 +1,114 @@
-# Ubuntu Voice Agent (Jarvis)
+<div align="center">
+  <img src="https://via.placeholder.com/150/000000/FFFFFF/?text=A" alt="Atlas Logo" width="100"/>
+  <h1>Atlas</h1>
+  <p><b>AI Runtime for Desktop Assistants</b></p>
+  <p>
+    <i>Atlas no es solo un asistente de voz. Es un runtime modular impulsado por eventos diseñado para construir agentes multimodales autónomos en tu escritorio.</i>
+  </p>
+</div>
 
-Un asistente de voz bidireccional y en tiempo real para Ubuntu, potenciado por la Live API de Google Gemini (2.5-flash-native-audio).
-Este agente no solo conversa contigo por micrófono y altavoces, sino que tiene capacidades autónomas de ejecución de comandos bash (con una capa de confirmación vocal por seguridad).
+---
 
-## Requisitos Previos
+<div align="center">
+  <b>🎙 Voice</b> • <b>🧠 Knowledge</b> • <b>🖥 Desktop</b> • <b>👁 Vision</b> • <b>🔌 Plugins</b> • <b>⚡ Event Driven</b>
+</div>
 
-- Python 3.10 o superior
-- Bibliotecas del sistema para PyAudio (ALSA/PortAudio)
+---
+
+## 🌟 What is Atlas?
+
+Atlas es un marco de ejecución (runtime) diseñado para cerrar la brecha entre los LLMs y tu sistema operativo. A diferencia de un simple script que consume una API, Atlas proporciona una arquitectura completa basada en eventos, permitiendo que tu asistente escuche, observe, recuerde y ejecute acciones de forma autónoma (o supervisada) en tu entorno de trabajo.
+
+### ¿Qué problema resuelve?
+Los asistentes actuales suelen estar limitados al navegador o acoplados fuertemente a un único proveedor de IA. Atlas extrae la lógica central (el "cerebro") y desacopla todas las demás partes:
+- **Cambia de proveedor** (Gemini, OpenAI, Claude) con solo tocar la configuración.
+- **Añade nuevas habilidades** instantáneamente gracias al sistema dinámico de plugins.
+- **Mantén el contexto a largo plazo** con una base de conocimiento nativa, que no depende del historial temporal del LLM.
+
+---
+
+## 🏗 Arquitectura
+
+Atlas está construido bajo principios estrictos de **Clean Architecture**:
+
+```mermaid
+graph TD
+    UI[CLI / GUI UI] -. Subscribes to .-> EventBus((Event Bus))
+    Brain[Brain Assistant] <--> EventBus
+    
+    Brain --> Provider[LLM Provider Interface]
+    Provider -. Implements .-> Gemini[Gemini Live API]
+    
+    Brain --> Registry[Plugin Registry]
+    Registry --> Plugins[Dynamic Plugins]
+    
+    Plugins --> Shell[💻 Shell Plugin]
+    Plugins --> Browser[🌐 Browser Plugin]
+    Plugins --> System[⚙️ System Plugin]
+    Plugins --> KnowledgePlug[🧠 Knowledge Plugin]
+    
+    KnowledgePlug --> KnowledgeManager[Knowledge Base]
+    KnowledgeManager --> JSON[JSON Backend]
+```
+
+- **🧠 Brain**: Coordina el micrófono, la voz, la VAD (Voice Activity Detection) y el bucle de eventos.
+- **⚡ Event Bus**: Toda la comunicación es mediante eventos fuertemente tipados (`ToolStarted`, `SpeechRecognized`, `KnowledgeUpdated`). Esto permite escalar a GUIs o sistemas de telemetría sin tocar el núcleo.
+- **🔌 Plugins**: Todas las herramientas (Shell, Browser, System, Memoria) se cargan dinámicamente y se aíslan.
+- **📚 Knowledge Base**: Un subsistema de memoria persistente con control de versión.
+
+---
+
+## 🚀 Getting Started
+
+### 1. Requisitos
+- Python 3.10+
+- Bibliotecas del sistema (para PyAudio y dependencias de voz):
   ```bash
   sudo apt-get install portaudio19-dev python3-pyaudio
   ```
 
-## Instalación
+### 2. Instalación
+```bash
+git clone https://github.com/tu-usuario/atlas.git
+cd atlas
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
 
-1. Clona el repositorio.
-2. Crea un entorno virtual:
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   ```
-3. Instala las dependencias:
-   ```bash
-   pip install google-genai pyaudio
-   ```
+### 3. Configuración
+Crea un archivo `config.yaml` o edita el existente para configurar tus proveedores. Atlas descubrirá automáticamente los plugins.
+```yaml
+provider:
+  type: gemini
+  model: models/gemini-2.0-flash-exp
+```
 
-## Uso
+```bash
+export GEMINI_API_KEY="tu_clave_aqui"
+export TAVILY_API_KEY="tu_clave_aqui" # Para búsqueda web
+```
 
-1. Exporta tu clave de API de Google AI Studio:
-   ```bash
-   export GEMINI_API_KEY="tu_clave_aqui"
-   ```
-2. Ejecuta el agente:
-   ```bash
-   python3 jarvis.py
-   ```
+### 4. Ejecución
+```bash
+python3 jarvis.py
+```
 
-## Arquitectura
+---
 
-- `jarvis.py`: Maneja el bucle de eventos asíncrono, la captura de audio por RMS (VAD), la síntesis y el WebSocket de la Live API.
-- `tools.py`: Define las herramientas y el `CommandManager`, el cual requiere confirmación explícita (del usuario por voz) antes de ejecutar cualquier subproceso en la terminal por razones de seguridad.
+## 🗺 Roadmap
+
+- [x] **Provider Abstraction**: Soporte para múltiples backends de LLM.
+- [x] **Plugin Registry**: Abstracción de herramientas.
+- [x] **Knowledge Base**: Subsistema de memoria persistente.
+- [x] **Event-Driven UI**: CLI reactiva conectada al bus de eventos.
+- [ ] **Vision Plugin**: Análisis de pantalla en tiempo real y OCR.
+- [ ] **MCP (Model Context Protocol)**: Soporte nativo para herramientas externas estandarizadas.
+- [ ] **Observability**: Exportación de métricas a Prometheus/Grafana.
+- [ ] **GUI**: Interfaz gráfica minimalista construida sobre el Event Bus.
+
+---
+
+## 🤝 Contributing
+
+¡Las PRs son bienvenidas! Para añadir un nuevo plugin, simplemente crea una carpeta en `src/plugins/tu_plugin/`, define tus clases heredando de `BaseTool` y exporta la función `setup(registry, dependencies)`. Atlas se encargará del resto.
