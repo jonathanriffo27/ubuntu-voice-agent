@@ -31,9 +31,10 @@ def play_sound(sound_type):
             pass
 
 class Assistant:
-    def __init__(self, provider: BaseProvider, registry: ToolRegistry):
+    def __init__(self, provider: BaseProvider, registry: ToolRegistry, config=None):
         self.provider = provider
         self.registry = registry
+        self.config = config
         
         self.jarvis_is_speaking = False
         self.processing_tool = False
