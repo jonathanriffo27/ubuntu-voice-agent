@@ -9,6 +9,7 @@ from google.genai import types
 import tools
 from src.providers.base import BaseProvider
 from src.brain.prompts import build_system_prompt
+from src.tools.registry import ToolRegistry
 
 AUDIO_FORMAT = pyaudio.paInt16
 AUDIO_CHANNELS = 1
@@ -30,10 +31,9 @@ def play_sound(sound_type):
             pass
 
 class Assistant:
-    def __init__(self, provider: BaseProvider, agent_tools: list, tool_functions: dict):
+    def __init__(self, provider: BaseProvider, registry: ToolRegistry):
         self.provider = provider
-        self.agent_tools = agent_tools
-        self.tool_functions = tool_functions
+        self.registry = registry
         
         self.jarvis_is_speaking = False
         self.processing_tool = False
@@ -224,9 +224,10 @@ class Assistant:
                             if fc.name != "obtener_estado_sistema":
                                 print(f"\n🔧 Ejecutando herramienta: {fc.name}")
                             
-                            if fc.name in self.tool_functions:
+                            tool = self.registry.get_tool(fc.name)
+                            if tool:
                                 try:
-                                    res = await asyncio.to_thread(self.tool_functions[fc.name], **args_dict)
+                                    res = await tool.execute(**args_dict)
                                     if not isinstance(res, dict):
                                         res = {"result": str(res)}
                                     if fc.name != "obtener_estado_sistema":
@@ -342,7 +343,7 @@ class Assistant:
 
         print("Conectando al proveedor...")
         try:
-            async with self.provider.connect(system_prompt=sys_prompt, tools=self.agent_tools) as session:
+            async with self.provider.connect(system_prompt=sys_prompt, tools=self.registry.get_all_tools()) as session:
                 print("\n✅ Conexión establecida. Comienza a hablar.\n")
                 
                 with warnings.catch_warnings():
