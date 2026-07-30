@@ -1,2 +1,6 @@
+google-genai
+pyaudio
+openwakeword
+pyyaml
 mss
 Pillow
