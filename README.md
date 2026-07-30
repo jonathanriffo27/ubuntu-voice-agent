@@ -96,6 +96,27 @@ python3 jarvis.py
 
 ---
 
+## 📐 Decisiones de Arquitectura
+
+Atlas está construido pensando en el largo plazo. Aquí explicamos el *porqué* detrás de las decisiones más importantes:
+
+- **¿Por qué un Event Bus?**
+  Los asistentes tradicionales acoplan la interfaz (como la terminal o la voz) a la lógica central, llenando el código de `print()` o callbacks. Al usar un Event Bus, el cerebro solo *emite* eventos (`SpeechRecognized`, `ToolStarted`). Cualquier interfaz (como nuestra CLI en `rich` o una futura GUI) solo debe suscribirse a los eventos. Cero acoplamiento.
+
+- **¿Por qué Providers abstractos?**
+  Las APIs de OpenAI, Gemini y Claude cambian constantemente. En Atlas, el núcleo solo interactúa con un `BaseProvider`. Si el día de mañana sale un modelo mejor, solo creas un nuevo provider; las herramientas y la lógica de negocio permanecen intactas.
+
+- **¿Por qué un sistema de Plugins?**
+  Permite aislar dependencias. El plugin de Visión necesita `mss` y `Pillow`; el de Shell necesita acceso a subprocesos. Si alguien no necesita visión, simplemente borra el plugin y el sistema sigue funcionando. Además, facilita que la comunidad extienda Atlas sin tocar el núcleo.
+
+- **¿Por qué separar la Knowledge Base?**
+  Los LLMs tienen memoria a corto plazo limitada por su ventana de contexto. Atlas tiene un subsistema de memoria (`KnowledgeManager`) agnóstico del proveedor. Esto permite a Atlas construir un perfil del usuario y recordar notas a través de meses de uso, persistiendo en JSON (y fácilmente migrable a SQLite).
+
+- **¿Por qué ToolContext y ToolResult?**
+  Estandarizar las entradas y salidas de las herramientas garantiza que cualquier plugin devuelva un contrato predecible. El `ToolContext` permite inyectar dependencias globales (como el Event Bus o el Config) hacia las herramientas sin usar variables globales.
+
+---
+
 ## 🗺 Roadmap
 
 - [x] **Provider Abstraction**: Soporte para múltiples backends de LLM.
