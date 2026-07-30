@@ -1,6 +1,7 @@
 from typing import Dict, Any
 from .base import BaseTool, ToolContext, ToolResult
 from src.knowledge.manager import KnowledgeManager
+from src.events.base import KnowledgeUpdated
 
 class GuardarNotaTool(BaseTool):
     def __init__(self, manager: KnowledgeManager):
@@ -32,6 +33,12 @@ class GuardarNotaTool(BaseTool):
             return ToolResult(success=False, content="Falta la nota a guardar.")
             
         self.manager.save_note(nota)
+        if context.event_bus and context.conversation_context:
+            context.event_bus.publish(KnowledgeUpdated(
+                context=context.conversation_context,
+                action="note_added",
+                details=f"Nota guardada: '{nota}'"
+            ))
         return ToolResult(success=True, content=f"Nota guardada correctamente: '{nota}'")
 
 class BorrarNotaTool(BaseTool):
@@ -65,6 +72,12 @@ class BorrarNotaTool(BaseTool):
             
         success = self.manager.delete_note(indice)
         if success:
+            if context.event_bus and context.conversation_context:
+                context.event_bus.publish(KnowledgeUpdated(
+                    context=context.conversation_context,
+                    action="note_deleted",
+                    details=f"Nota #{indice} borrada."
+                ))
             return ToolResult(success=True, content=f"Nota #{indice} borrada correctamente.")
         else:
             return ToolResult(success=False, content=f"No se pudo borrar la nota #{indice}. Asegúrate de que el índice sea válido.")
@@ -100,4 +113,10 @@ class GuardarPerfilTool(BaseTool):
             return ToolResult(success=False, content="Faltan parámetros 'campo' o 'valor'.")
             
         self.manager.save_profile(campo, valor)
+        if context.event_bus and context.conversation_context:
+            context.event_bus.publish(KnowledgeUpdated(
+                context=context.conversation_context,
+                action="profile_updated",
+                details=f"Perfil '{campo}' actualizado a '{valor}'."
+            ))
         return ToolResult(success=True, content=f"Perfil actualizado: {campo} = {valor}")

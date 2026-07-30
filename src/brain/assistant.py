@@ -11,6 +11,12 @@ from src.brain.prompts import build_system_prompt
 from src.tools.registry import ToolRegistry
 from src.tools.base import ToolContext
 from src.knowledge.manager import KnowledgeManager
+from src.events.base import (
+    ConversationContext, SessionStarted, SessionEnded, VoiceListeningStarted, 
+    VoiceListeningStopped, SpeechRecognized, ToolStarted, ToolSucceeded, 
+    ToolFailed, ResponseGenerated, ErrorOccurred
+)
+from src.events.bus import EventBus
 
 AUDIO_FORMAT = pyaudio.paInt16
 AUDIO_CHANNELS = 1
@@ -32,11 +38,13 @@ def play_sound(sound_type):
             pass
 
 class Assistant:
-    def __init__(self, provider: BaseProvider, registry: ToolRegistry, config=None, knowledge_manager: KnowledgeManager = None):
+    def __init__(self, provider: BaseProvider, registry: ToolRegistry, config=None, knowledge_manager: KnowledgeManager = None, event_bus: EventBus = None):
         self.provider = provider
         self.registry = registry
         self.config = config
         self.knowledge_manager = knowledge_manager
+        self.event_bus = event_bus or EventBus()
+        self.conversation_context = ConversationContext()
         
         self.jarvis_is_speaking = False
         self.processing_tool = False
@@ -120,10 +128,15 @@ class Assistant:
                                 silence_frames += 1
                         else:
                             silence_frames = 0
+                            if not user_spoke:
+                                self.event_bus.publish(VoiceListeningStarted(self.conversation_context))
                             user_spoke = True
                             
                         if user_spoke and silence_frames > (frames_per_second * max_silence_seconds):
                             await audio_queue_input.put("END_OF_TURN")
+                            self.event_bus.publish(VoiceListeningStopped(self.conversation_context))
+                            # En lugar de texto, notificamos que se terminó de escuchar
+                            self.event_bus.publish(SpeechRecognized(self.conversation_context, text="[Audio enviado]"))
                             play_sound("processing")
                             silence_frames = 0
                             user_spoke = False
@@ -195,10 +208,8 @@ class Assistant:
                                         audio_queue_output.put_nowait(part.inline_data.data)
                                 elif part.text:
                                     if not printed_prefix:
-                                        sys.stdout.write("\n🤖 Atlas: ")
                                         printed_prefix = True
-                                    sys.stdout.write(part.text)
-                                    sys.stdout.flush()
+                                    self.event_bus.publish(ResponseGenerated(self.conversation_context, text=part.text))
                                 await asyncio.sleep(0)
                         if getattr(sc, 'turn_complete', False):
                             self.jarvis_is_speaking = False
@@ -225,12 +236,16 @@ class Assistant:
                                 continue
                                 
                             if fc.name != "obtener_estado_sistema":
-                                print(f"\n🔧 Ejecutando herramienta: {fc.name}")
+                                self.event_bus.publish(ToolStarted(self.conversation_context, tool_name=fc.name, arguments=args_dict))
                             
                             tool = self.registry.get_tool(fc.name)
                             if tool:
                                 try:
-                                    context = ToolContext(config=self.config)
+                                    context = ToolContext(
+                                        config=self.config,
+                                        event_bus=self.event_bus,
+                                        conversation_context=self.conversation_context
+                                    )
                                     tool_result = await tool.execute(context, **args_dict)
                                     
                                     # Formatear la respuesta para Gemini
@@ -239,14 +254,14 @@ class Assistant:
                                         res_dict.update(tool_result.metadata)
                                     
                                     if fc.name != "obtener_estado_sistema":
-                                        print(f"📦 Herramienta {fc.name} completada (Success: {tool_result.success})")
+                                        self.event_bus.publish(ToolSucceeded(self.conversation_context, tool_name=fc.name, result=res_dict))
                                     
                                     responses.append(types.FunctionResponse(name=fc.name, id=fc.id, response=res_dict))
                                 except Exception as e:
-                                    print(f"\n[ERROR EN TOOL {fc.name}]: {e}")
+                                    self.event_bus.publish(ToolFailed(self.conversation_context, tool_name=fc.name, error=str(e)))
                                     responses.append(types.FunctionResponse(name=fc.name, id=fc.id, response={"error": str(e)}))
                             else:
-                                print(f"⚠️ [TOOL NO ENCONTRADA] {fc.name}")
+                                self.event_bus.publish(ErrorOccurred(self.conversation_context, error=f"Tool no encontrada: {fc.name}", source="Assistant"))
                         
                         if responses:
                             drained = 0
@@ -268,7 +283,7 @@ class Assistant:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            print(f"\n[CRITICO recv]: {e}")
+            self.event_bus.publish(ErrorOccurred(self.conversation_context, error=str(e), source="Assistant: receive_and_route"))
             raise
         finally:
             self.jarvis_is_speaking = False
@@ -353,7 +368,7 @@ class Assistant:
         print("Conectando al proveedor...")
         try:
             async with self.provider.connect(system_prompt=sys_prompt, tools=self.registry.get_all_tools()) as session:
-                print("\n✅ Conexión establecida. Comienza a hablar.\n")
+                self.event_bus.publish(SessionStarted(self.conversation_context))
                 
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", DeprecationWarning)
@@ -392,5 +407,5 @@ class Assistant:
         try:
             asyncio.run(self.run_async())
         except KeyboardInterrupt:
-            print("\nSaliendo de Atlas...")
+            self.event_bus.publish(SessionEnded(self.conversation_context))
             os._exit(0)

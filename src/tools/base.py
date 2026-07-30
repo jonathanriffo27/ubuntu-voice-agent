@@ -2,11 +2,14 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 from dataclasses import dataclass
 from src.config.models import AtlasConfig
+from src.events.base import ConversationContext
+from src.events.bus import EventBus
 
 @dataclass
 class ToolContext:
     config: AtlasConfig
-    # En el futuro: memory_manager, event_bus, etc.
+    event_bus: EventBus = None
+    conversation_context: ConversationContext = None
 
 @dataclass
 class ToolResult:

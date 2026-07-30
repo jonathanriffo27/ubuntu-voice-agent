@@ -10,6 +10,8 @@ from src.tools.browser import BuscarEnInternetTool
 from src.knowledge.manager import KnowledgeManager
 from src.knowledge.backends.json import JsonKnowledgeBackend
 from src.config.loader import load_config
+from src.events.bus import EventBus
+from src.observability.logger import LoggingListener
 
 API_KEY = os.environ.get("GEMINI_API_KEY")
 if not API_KEY:
@@ -18,6 +20,10 @@ if not API_KEY:
 
 if __name__ == "__main__":
     config = load_config("config.yaml")
+
+    # Inicializar el Event Bus y los suscriptores (Observability)
+    event_bus = EventBus()
+    logger = LoggingListener(event_bus)
 
     # Inicializar el registro de herramientas
     registry = ToolRegistry()
@@ -54,6 +60,7 @@ if __name__ == "__main__":
         provider=provider, 
         registry=registry, 
         config=config, 
-        knowledge_manager=knowledge_manager
+        knowledge_manager=knowledge_manager,
+        event_bus=event_bus
     )
     assistant.run()
