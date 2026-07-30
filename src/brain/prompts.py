@@ -1,5 +1,5 @@
 from src.knowledge.manager import KnowledgeManager
-from src.tools.system import detect_user_location
+from src.plugins.system.tools import detect_user_location
 
 SYS_PROMPT_BASE = """Eres Atlas, un asistente de escritorio avanzado. Sé conciso. Reglas importantes:
 1. Cuando uses la herramienta 'buscar_en_internet' y recibas resultados, SIEMPRE basa tu respuesta en los datos obtenidos de la búsqueda.
