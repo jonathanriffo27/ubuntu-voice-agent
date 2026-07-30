@@ -250,8 +250,23 @@ class Assistant:
                                     
                                     # Formatear la respuesta para Gemini
                                     res_dict = {"result": tool_result.content}
+                                    
+                                    # Si la herramienta devuelve metadata (ej. imagen de la pantalla)
                                     if tool_result.metadata:
-                                        res_dict.update(tool_result.metadata)
+                                        if "inline_data" in tool_result.metadata:
+                                            inline = tool_result.metadata["inline_data"]
+                                            try:
+                                                import base64
+                                                data_bytes = base64.b64decode(inline["data"])
+                                                # En Gemini Live, las imágenes se envían como realtime_input de video
+                                                await session.send_realtime_input(
+                                                    video={"mime_type": inline["mime_type"], "data": data_bytes}
+                                                )
+                                                res_dict["status"] = "Imagen adjuntada exitosamente al flujo de video."
+                                            except Exception as ve:
+                                                res_dict["status"] = f"Error inyectando imagen: {ve}"
+                                        else:
+                                            res_dict.update(tool_result.metadata)
                                     
                                     if fc.name != "obtener_estado_sistema":
                                         self.event_bus.publish(ToolSucceeded(self.conversation_context, tool_name=fc.name, result=res_dict))
