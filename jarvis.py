@@ -5,6 +5,9 @@ from src.brain.assistant import Assistant
 from src.tools.registry import ToolRegistry
 from src.tools.legacy import get_legacy_tools
 from src.tools.shell import BashExecutor, CommandState, ProponerComandoTool, EjecutarComandoTool
+from src.tools.knowledge import GuardarNotaTool, BorrarNotaTool, GuardarPerfilTool
+from src.knowledge.manager import KnowledgeManager
+from src.knowledge.backends.json import JsonKnowledgeBackend
 from src.config.loader import load_config
 
 API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -20,11 +23,18 @@ if __name__ == "__main__":
     for tool in get_legacy_tools():
         registry.register(tool)
         
-    # Inicializar herramientas nativas
+    # Inicializar herramientas nativas de shell
     shell_state = CommandState()
     shell_executor = BashExecutor()
     registry.register(ProponerComandoTool(state=shell_state))
     registry.register(EjecutarComandoTool(executor=shell_executor, state=shell_state))
+
+    # Inicializar Base de Conocimiento (Knowledge)
+    knowledge_backend = JsonKnowledgeBackend("atlas_knowledge.json")
+    knowledge_manager = KnowledgeManager(backend=knowledge_backend)
+    registry.register(GuardarNotaTool(manager=knowledge_manager))
+    registry.register(BorrarNotaTool(manager=knowledge_manager))
+    registry.register(GuardarPerfilTool(manager=knowledge_manager))
 
     # Inicializar el proveedor
     if config.provider.type == "gemini":
@@ -35,6 +45,10 @@ if __name__ == "__main__":
     else:
         raise ValueError(f"Proveedor desconocido: {config.provider.type}")
     
-    # Inicializar el asistente
-    assistant = Assistant(provider=provider, registry=registry, config=config)
+    assistant = Assistant(
+        provider=provider, 
+        registry=registry, 
+        config=config, 
+        knowledge_manager=knowledge_manager
+    )
     assistant.run()

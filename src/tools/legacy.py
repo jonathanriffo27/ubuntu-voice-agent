@@ -60,23 +60,5 @@ def get_legacy_tools() -> list[BaseTool]:
             description="Abre una aplicación instalada en el sistema (ej. calculadora, terminal, code) o abre páginas web conocidas en el navegador (ej. gmail, youtube, whatsapp).",
             parameters={"type": "OBJECT", "properties": {"nombre": {"type": "STRING", "description": "El nombre de la aplicación o sitio web a abrir"}}, "required": ["nombre"]},
             func=tools.abrir_aplicacion
-        ),
-        LegacyToolWrapper(
-            name="guardar_nota",
-            description="Guarda una nota general que recordarás en futuras sesiones. Para datos personales permanentes usa 'guardar_perfil'. Máximo 20 notas, las más antiguas rotan.",
-            parameters={"type": "OBJECT", "properties": {"nota": {"type": "STRING", "description": "La nota a guardar (máx 200 caracteres)"}}, "required": ["nota"]},
-            func=tools.guardar_nota
-        ),
-        LegacyToolWrapper(
-            name="borrar_nota",
-            description="Borra una nota general por su número. Úsalo cuando el usuario pida olvidar algo.",
-            parameters={"type": "OBJECT", "properties": {"indice": {"type": "INTEGER", "description": "Número de la nota a borrar (1-indexado)"}}, "required": ["indice"]},
-            func=tools.borrar_nota
-        ),
-        LegacyToolWrapper(
-            name="guardar_perfil",
-            description="Guarda un dato PERMANENTE del usuario (ej. nombre, ocupación, intereses). Estos datos NUNCA se borran automáticamente. Máx 10 campos.",
-            parameters={"type": "OBJECT", "properties": {"campo": {"type": "STRING", "description": "Nombre del campo (ej. nombre, ocupacion, intereses)"}, "valor": {"type": "STRING", "description": "Valor del campo (máx 100 caracteres)"}}, "required": ["campo", "valor"]},
-            func=tools.guardar_perfil
         )
     ]

@@ -11,6 +11,7 @@ from src.providers.base import BaseProvider
 from src.brain.prompts import build_system_prompt
 from src.tools.registry import ToolRegistry
 from src.tools.base import ToolContext
+from src.knowledge.manager import KnowledgeManager
 
 AUDIO_FORMAT = pyaudio.paInt16
 AUDIO_CHANNELS = 1
@@ -32,10 +33,11 @@ def play_sound(sound_type):
             pass
 
 class Assistant:
-    def __init__(self, provider: BaseProvider, registry: ToolRegistry, config=None):
+    def __init__(self, provider: BaseProvider, registry: ToolRegistry, config=None, knowledge_manager: KnowledgeManager = None):
         self.provider = provider
         self.registry = registry
         self.config = config
+        self.knowledge_manager = knowledge_manager
         
         self.jarvis_is_speaking = False
         self.processing_tool = False
@@ -337,9 +339,9 @@ class Assistant:
 
         self.silence_threshold = await self.calibrate_microphone()
 
-        sys_prompt, ubicacion, datos = build_system_prompt()
-        perfil = datos.get("perfil", {})
-        notas = datos.get("notas", [])
+        sys_prompt, ubicacion = build_system_prompt(self.knowledge_manager)
+        perfil = self.knowledge_manager.get_profile() if self.knowledge_manager else {}
+        notas = self.knowledge_manager.get_notes() if self.knowledge_manager else []
         print(f"🌍 Ubicación detectada: {ubicacion}")
         if perfil:
             print(f"👤 Perfil cargado: {', '.join(f'{k}={v}' for k, v in perfil.items())}")
