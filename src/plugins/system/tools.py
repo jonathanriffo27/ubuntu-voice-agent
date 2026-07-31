@@ -133,11 +133,8 @@ class AbrirAplicacionTool(BaseTool):
         
         cmd = mapeos.get(nombre_lower)
         if not cmd:
-            if shutil.which(nombre_lower):
-                cmd = nombre_lower
-            else:
-                print(f"  ❌ No se encontró la aplicación '{nombre}'")
-                return ToolResult(success=False, content=f"No conozco la aplicación '{nombre}' ni tengo un comando instalado con ese nombre.")
+            print(f"  ❌ No se encontró la aplicación '{nombre}' en la lista de permitidas.")
+            return ToolResult(success=False, content=f"No conozco la aplicación '{nombre}'. Pide confirmación y usa ejecutar_comando si es necesario.")
                 
         try:
             subprocess.Popen(cmd, shell=True, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

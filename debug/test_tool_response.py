@@ -4,7 +4,7 @@ import sys
 from google import genai
 from google.genai import types
 
-os.environ["GEMINI_API_KEY"] = "os.getenv("GEMINI_API_KEY", "your-api-key")" # fallback that works
+os.environ["GEMINI_API_KEY"] = os.getenv("GEMINI_API_KEY", "your-api-key") # fallback that works
 
 async def main():
     client = genai.Client()

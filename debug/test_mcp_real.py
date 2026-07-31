@@ -6,7 +6,7 @@ import sys
 query = "tiempo actual en Puerto Natales"
 api_key = os.environ.get("GEMINI_API_KEY")
 if not api_key:
-    api_key = "os.getenv("GEMINI_API_KEY", "your-api-key")"
+    api_key = os.getenv("GEMINI_API_KEY", "your-api-key")
 
 node_path = "/home/jonathan/.nvm/versions/node/v20.20.2/bin/node"
 script_path = "/home/jonathan/.nvm/versions/node/v20.20.2/lib/node_modules/mcp-gemini-google-search/dist/index.js"

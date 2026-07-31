@@ -4,13 +4,13 @@ import os
 
 keys = [
     os.environ.get("GEMINI_API_KEY", ""),
-    "os.getenv("GEMINI_API_KEY", "your-api-key")", 
-    "os.getenv("GEMINI_API_KEY", "your-api-key")"
+    os.getenv("GEMINI_API_KEY", "your-api-key"), 
+    os.getenv("GEMINI_API_KEY", "your-api-key")
 ]
 
 for i, api_key in enumerate(keys):
     if not api_key: continue
-    print(f"Testing key {i} ({api_key[:15]}...)")
+    print(f"Testing key {i} (length: {len(api_key)})")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     data = {
         "contents": [{"parts": [{"text": "tiempo actual en Puerto Natales"}]}],

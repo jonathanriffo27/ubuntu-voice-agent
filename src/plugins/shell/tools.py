@@ -1,5 +1,6 @@
 import asyncio
 import time
+import re
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 
@@ -25,14 +26,27 @@ class BashExecutor(CommandExecutor):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await process.communicate()
-        duration = int((time.time() - start) * 1000)
-        return CommandResult(
-            exit_code=process.returncode,
-            stdout=stdout.decode('utf-8', errors='replace'),
-            stderr=stderr.decode('utf-8', errors='replace'),
-            duration_ms=duration
-        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=45.0)
+            duration = int((time.time() - start) * 1000)
+            return CommandResult(
+                exit_code=process.returncode,
+                stdout=stdout.decode('utf-8', errors='replace'),
+                stderr=stderr.decode('utf-8', errors='replace'),
+                duration_ms=duration
+            )
+        except asyncio.TimeoutError:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            duration = int((time.time() - start) * 1000)
+            return CommandResult(
+                exit_code=-1,
+                stdout="",
+                stderr="El comando excedió el tiempo límite y fue cancelado.",
+                duration_ms=duration
+            )
 
 class CommandState:
     def __init__(self, timeout_seconds: int = 30):
@@ -85,10 +99,15 @@ class ProponerComandoTool(BaseTool):
         if not config.enabled:
             return ToolResult(success=False, content="La herramienta de shell está deshabilitada por configuración.")
             
-        # Hardcoded simple security check (can be expanded)
-        blocked_keywords = ["rm -rf /", "mkfs", "> /dev/sda"]
-        if any(kw in comando for kw in blocked_keywords):
-            return ToolResult(success=False, content=f"El comando '{comando}' está bloqueado por seguridad.")
+        # Defensa en profundidad, la barrera real es la confirmación humana
+        blocked_patterns = [
+            r"rm\s+-r[fF]?\s+(?:/|~|\$)",
+            r"dd\s+.*of=/dev/",
+            r"mkfs\.",
+            r"(?:curl|wget)\s+.*\|\s*(?:bash|sh)"
+        ]
+        if any(re.search(pat, comando) for pat in blocked_patterns):
+            return ToolResult(success=False, content=f"El comando '{comando}' está bloqueado por seguridad (defensa en profundidad).")
 
         if config.confirmation == "never":
             # Si no requiere confirmación, podríamos ejecutarlo directo aquí, 

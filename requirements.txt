@@ -1,6 +1,8 @@
-google-genai
-pyaudio
-openwakeword
-pyyaml
-mss
-Pillow
+google-genai>=2.14.0
+PyAudio>=0.2.14
+openwakeword>=0.4.0
+PyYAML>=6.0.3
+mss>=10.2.0
+Pillow>=12.3.0
+python-docx>=1.1.0
+numpy>=2.5.1

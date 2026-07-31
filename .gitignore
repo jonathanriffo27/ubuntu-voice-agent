@@ -2,4 +2,7 @@ venv/
 __pycache__/
 *.pyc
 .env
-core
+/core
+jarvis_memory.json
+atlas_knowledge.json
+*.json.tmp

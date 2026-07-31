@@ -46,6 +46,8 @@ graph TD
     Plugins --> Browser[🌐 Browser Plugin]
     Plugins --> System[⚙️ System Plugin]
     Plugins --> KnowledgePlug[🧠 Knowledge Plugin]
+    Plugins --> OfficePlug[📄 Office Plugin]
+    Plugins --> VisionPlug[👁 Vision Plugin]
     
     KnowledgePlug --> KnowledgeManager[Knowledge Base]
     KnowledgeManager --> JSON[JSON Backend]
@@ -123,7 +125,8 @@ Atlas está construido pensando en el largo plazo. Aquí explicamos el *porqué*
 - [x] **Plugin Registry**: Abstracción de herramientas.
 - [x] **Knowledge Base**: Subsistema de memoria persistente.
 - [x] **Event-Driven UI**: CLI reactiva conectada al bus de eventos.
-- [ ] **Vision Plugin**: Análisis de pantalla en tiempo real y OCR.
+- [x] **Vision Plugin**: Análisis de pantalla en tiempo real y OCR.
+- [x] **Office Plugin**: Generación automatizada de documentos.
 - [ ] **MCP (Model Context Protocol)**: Soporte nativo para herramientas externas estandarizadas.
 - [ ] **Observability**: Exportación de métricas a Prometheus/Grafana.
 - [ ] **GUI**: Interfaz gráfica minimalista construida sobre el Event Bus.

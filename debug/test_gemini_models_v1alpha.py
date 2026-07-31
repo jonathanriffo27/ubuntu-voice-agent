@@ -4,7 +4,7 @@ import os
 
 api_key = os.environ.get("GEMINI_API_KEY")
 if not api_key:
-    api_key = "os.getenv("GEMINI_API_KEY", "your-api-key")"
+    api_key = os.getenv("GEMINI_API_KEY", "your-api-key")
 
 models = ["gemini-2.5-flash", "gemini-3.0-flash", "gemini-2.0-flash"]
 

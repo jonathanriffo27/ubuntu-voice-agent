@@ -2,11 +2,9 @@ import urllib.request
 import json
 import os
 
-api_key = os.environ.get("GEMINI_API_KEY")
-if not api_key:
-    api_key = "os.getenv("GEMINI_API_KEY", "your-api-key")"
+api_key = os.getenv("GEMINI_API_KEY", "your-api-key")
 
-url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
 data = {
     "contents": [{"parts": [{"text": "tiempo actual en Puerto Natales"}]}],
     "tools": [{"googleSearch": {}}]

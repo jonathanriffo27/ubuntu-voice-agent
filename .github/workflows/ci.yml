@@ -21,11 +21,12 @@ jobs:
         pip install ruff black mypy
     # - name: Check formatting with black
     #   run: black --check src/
-    # - name: Lint with ruff
-    #   run: ruff check src/
+    - name: Lint with ruff
+      run: ruff check src/
+      continue-on-error: true
     # - name: Type check with mypy
     #   run: mypy src/ --ignore-missing-imports
-    # Descomentaremos estas líneas cuando el código esté completamente tipado y formateado
+    # Descomentaremos black y mypy cuando el código esté completamente tipado y formateado
 
   build-and-test:
     runs-on: ubuntu-latest
@@ -47,4 +48,4 @@ jobs:
       run: |
         # Usamos Atlas Doctor como test de humo para validar
         # importaciones y carga de plugins.
-        python doctor.py
+        python debug/doctor.py

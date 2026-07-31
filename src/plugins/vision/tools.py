@@ -11,6 +11,7 @@ class AnalizarPantallaTool(BaseTool):
     """
     def __init__(self, screen_service: ScreenCapture):
         self.screen_service = screen_service
+        self.last_capture_time = 0
 
     @property
     def name(self) -> str:
@@ -28,7 +29,16 @@ class AnalizarPantallaTool(BaseTool):
         }
 
     async def execute(self, context: ToolContext, **kwargs) -> ToolResult:
+        import time
+        if hasattr(context.config, 'vision') and not context.config.vision.enabled:
+            return ToolResult(success=False, content="La herramienta de visión está deshabilitada en la configuración.")
+        
+        now = time.time()
+        if now - self.last_capture_time < 5.0: # 5 segundos de cooldown
+            return ToolResult(success=False, content="Por favor, espera unos segundos antes de tomar otra captura de pantalla para evitar sobrecarga.")
+        
         try:
+            self.last_capture_time = now
             image_bytes = self.screen_service.capture_screen()
             b64_img = base64.b64encode(image_bytes).decode('utf-8')
             

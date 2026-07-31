@@ -32,7 +32,10 @@ class GuardarNotaTool(BaseTool):
         if not nota:
             return ToolResult(success=False, content="Falta la nota a guardar.")
             
-        self.manager.save_note(nota)
+        try:
+            self.manager.save_note(nota)
+        except Exception as e:
+            return ToolResult(success=False, content=f"No pude guardar la nota, hubo un error de escritura: {e}")
         if context.event_bus and context.conversation_context:
             context.event_bus.publish(KnowledgeUpdated(
                 context=context.conversation_context,
@@ -112,7 +115,10 @@ class GuardarPerfilTool(BaseTool):
         if not campo or not valor:
             return ToolResult(success=False, content="Faltan parámetros 'campo' o 'valor'.")
             
-        self.manager.save_profile(campo, valor)
+        try:
+            self.manager.save_profile(campo, valor)
+        except Exception as e:
+            return ToolResult(success=False, content=f"No pude guardar el perfil, hubo un error de escritura: {e}")
         if context.event_bus and context.conversation_context:
             context.event_bus.publish(KnowledgeUpdated(
                 context=context.conversation_context,

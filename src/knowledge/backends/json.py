@@ -23,12 +23,15 @@ class JsonKnowledgeBackend(KnowledgeBackend):
             return KnowledgeState()
 
     def save(self, state: KnowledgeState) -> None:
+        tmp_path = f"{self.file_path}.tmp"
         try:
-            with open(self.file_path, 'w', encoding='utf-8') as f:
+            with open(tmp_path, 'w', encoding='utf-8') as f:
                 json.dump({
                     "version": state.version,
                     "profile": state.profile,
                     "notes": state.notes
                 }, f, indent=4, ensure_ascii=False)
+            os.replace(tmp_path, self.file_path)
         except Exception as e:
             print(f"⚠️ Error guardando base de conocimiento JSON: {e}")
+            raise

@@ -49,7 +49,10 @@ class CrearDocumentoOfficeTool(BaseTool):
             
         titulo = kwargs.get("titulo", "Documento Sin Título")
         contenido = kwargs.get("contenido", "")
-        nombre = kwargs.get("nombre_archivo", "documento")
+        nombre_crudo = str(kwargs.get("nombre_archivo", "documento"))
+        nombre = os.path.basename(nombre_crudo).strip()
+        if not nombre or ".." in nombre:
+            nombre = "documento"
         
         # Crear documento
         doc = docx.Document()

@@ -4,7 +4,7 @@ import sys
 from google import genai
 from google.genai import types
 
-os.environ["GEMINI_API_KEY"] = "os.getenv("GEMINI_API_KEY", "your-api-key")"
+os.environ["GEMINI_API_KEY"] = os.getenv("GEMINI_API_KEY", "your-api-key")
 
 async def main():
     client = genai.Client()
@@ -16,9 +16,9 @@ async def main():
         ]}]
     )
     
-    async with client.aio.live.connect(model="gemini-2.0-flash", config=config) as session:
+    async with client.aio.live.connect(model="gemini-3.1-flash-live-preview", config=config) as session:
         print("Connected.")
-        await session.send(input="¿Cuál es el clima en Puerto Natales?")
+        await session.send(input="¿Cuál es el clima en Puerto Natales?", end_of_turn=True)
         
         async for msg in session.receive():
             if msg.server_content:
@@ -33,14 +33,11 @@ async def main():
                     print(f"Function: {fc.name}, args: {fc.args}")
                     if fc.name == "buscar_en_internet":
                         res = {"status": "success", "output": "Hace mucho frío y llueve a 5 grados celsius."}
-                        responses.append(types.LiveClientToolResponse(
-                            function_responses=[types.FunctionResponse(name=fc.name, id=fc.id, response=res)]
-                        ))
+                        responses.append(types.FunctionResponse(name=fc.name, id=fc.id, response=res))
                 
                 print("Sending tool response...")
                 try:
-                    for r in responses:
-                        await session.send(input=r)
+                    await session.send(input=types.LiveClientToolResponse(function_responses=responses))
                     print("Tool response sent successfully")
                 except Exception as e:
                     print("Error sending tool response:", e)

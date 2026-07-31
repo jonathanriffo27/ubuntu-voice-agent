@@ -30,10 +30,10 @@ except Exception:
 
 # Fallback keys del código
 fallback_keys = [
-    "os.getenv("GEMINI_API_KEY", "your-api-key")",
-    "os.getenv("GEMINI_API_KEY", "your-api-key")",
-    "os.getenv("GEMINI_API_KEY", "your-api-key")",
-    "os.getenv("GEMINI_API_KEY", "your-api-key")"
+    os.getenv("GEMINI_API_KEY", "your-api-key"),
+    os.getenv("GEMINI_API_KEY", "your-api-key"),
+    os.getenv("GEMINI_API_KEY", "your-api-key"),
+    os.getenv("GEMINI_API_KEY", "your-api-key")
 ]
 for i, k in enumerate(fallback_keys):
     api_keys.append((f"FALLBACK_{i+1}", k))

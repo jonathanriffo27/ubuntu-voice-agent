@@ -4,12 +4,12 @@ import sys
 from google import genai
 from google.genai import types
 
-os.environ["GEMINI_API_KEY"] = "os.getenv("GEMINI_API_KEY", "your-api-key")"
+os.environ["GEMINI_API_KEY"] = os.getenv("GEMINI_API_KEY", "your-api-key")
 
 async def main():
     client = genai.Client()
     config = types.LiveConnectConfig(
-        response_modalities=[types.Modality.TEXT],
+        response_modalities=[types.Modality.AUDIO],
         system_instruction=types.Content(parts=[types.Part.from_text(text="Eres un asistente útil. Siempre usa las herramientas si puedes.")]),
         tools=[{"function_declarations": [
             {"name": "buscar_en_internet", "description": "Busca el clima en internet.", "parameters": {"type": "OBJECT", "properties": {"query": {"type": "STRING"}}, "required": ["query"]}}
@@ -24,7 +24,8 @@ async def main():
             if msg.server_content:
                 if msg.server_content.model_turn:
                     for part in msg.server_content.model_turn.parts:
-                        if part.text: print("Model:", part.text)
+                        if part.text: print("Model text:", part.text)
+                        if part.inline_data: print("Model audio received")
             
             if msg.tool_call:
                 print(f"Tool call received: {msg.tool_call}")
