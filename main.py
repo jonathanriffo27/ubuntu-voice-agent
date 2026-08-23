@@ -7,6 +7,28 @@ from google import genai
 from google.genai import types
 import tools
 
+class LoggerTee:
+    def __init__(self, filename):
+        self.terminal = sys.stdout
+        self.log = open(filename, "w", encoding="utf-8")
+        
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+        self.log.flush()
+        
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+        
+    def isatty(self):
+        return self.terminal.isatty()
+        
+    def fileno(self):
+        return self.terminal.fileno()
+
+sys.stdout = LoggerTee("latest_session.log")
+sys.stderr = sys.stdout
 # Configuración de Audio (PyAudio)
 AUDIO_FORMAT = pyaudio.paInt16
 AUDIO_CHANNELS = 1

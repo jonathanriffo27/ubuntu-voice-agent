@@ -128,7 +128,8 @@ class AbrirAplicacionTool(BaseTool):
             "vscode": "code",
             "code": "code",
             "spotify": "spotify",
-            "discord": "discord"
+            "discord": "discord",
+            "onlyoffice": "onlyoffice-desktopeditors"
         }
         
         cmd = mapeos.get(nombre_lower)
@@ -143,3 +144,49 @@ class AbrirAplicacionTool(BaseTool):
         except Exception as e:
             print(f"  ❌ Error al abrir {nombre}: {e}")
             return ToolResult(success=False, content=f"Falló al intentar abrir {nombre}: {e}")
+
+class EnfocarAplicacionTool(BaseTool):
+    @property
+    def name(self) -> str:
+        return "enfocar_aplicacion"
+
+    @property
+    def description(self) -> str:
+        return "Busca una aplicación que ya está abierta y la trae al frente de la pantalla (le da el foco). Úsalo cuando el usuario quiera interactuar con una app que quedó en segundo plano."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "OBJECT", 
+            "properties": {
+                "nombre": {"type": "STRING", "description": "El nombre de la aplicación (ej. 'onlyoffice', 'firefox', 'terminal')"}
+            }, 
+            "required": ["nombre"]
+        }
+
+    async def execute(self, context: ToolContext, nombre: str = None) -> ToolResult:
+        if not nombre:
+            return ToolResult(success=False, content="Falta el nombre de la aplicación.")
+            
+        import time
+        import subprocess
+        
+        try:
+            # Simulamos el comportamiento del usuario en GNOME Shell:
+            # Presionar tecla Super (Windows), escribir el nombre de la app, presionar Enter.
+            # Esto busca la ventana abierta de la app y la trae al frente, o la abre si no estaba abierta.
+            
+            # 1. Presionar Super (KEY_LEFTMETA = 125)
+            subprocess.run(["ydotool", "key", "125:1", "125:0"])
+            time.sleep(0.4)
+            
+            # 2. Escribir el nombre
+            subprocess.run(["ydotool", "type", nombre])
+            time.sleep(0.4)
+            
+            # 3. Enter (KEY_ENTER = 28)
+            subprocess.run(["ydotool", "key", "28:1", "28:0"])
+            
+            return ToolResult(success=True, content=f"He buscado y enfocado la aplicación '{nombre}' en la pantalla.")
+        except Exception as e:
+            return ToolResult(success=False, content=f"Falló al intentar enfocar {nombre}: {e}")

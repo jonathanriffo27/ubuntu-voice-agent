@@ -1,8 +1,12 @@
 venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 .env
 /core
 jarvis_memory.json
 atlas_knowledge.json
 *.json.tmp
+*.log
+genai_error.txt
+last_edit.json

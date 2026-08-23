@@ -6,3 +6,7 @@ mss>=10.2.0
 Pillow>=12.3.0
 python-docx>=1.1.0
 numpy>=2.5.1
+pyautogui>=0.9.54
+httpx>=0.28.0
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

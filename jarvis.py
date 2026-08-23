@@ -1,5 +1,6 @@
 import os
 import sys
+from src.utils.logging import setup_logging, get_logger
 from src.providers.gemini import GeminiProvider
 from src.brain.assistant import Assistant
 from src.tools.registry import ToolRegistry
@@ -10,9 +11,13 @@ from src.events.bus import EventBus
 from src.ui.cli import CLIInterface
 from src.plugins.loader import discover_and_register_plugins
 
+# Inicializar logging estructurado
+setup_logging(log_file="latest_session.log")
+logger = get_logger("bootstrap")
+
 API_KEY = os.environ.get("GEMINI_API_KEY")
 if not API_KEY:
-    print("❌ ERROR: Debes exportar GEMINI_API_KEY.")
+    logger.critical("Debes exportar la variable de entorno GEMINI_API_KEY.")
     sys.exit(1)
 
 if __name__ == "__main__":
@@ -24,7 +29,7 @@ if __name__ == "__main__":
 
     # Inicializar el registro de herramientas
     registry = ToolRegistry()
-    
+
     # Inicializar Base de Conocimiento (Knowledge)
     knowledge_backend = JsonKnowledgeBackend("atlas_knowledge.json")
     knowledge_manager = KnowledgeManager(backend=knowledge_backend)
@@ -38,16 +43,17 @@ if __name__ == "__main__":
     # Inicializar el proveedor
     if config.provider.type == "gemini":
         provider = GeminiProvider(
-            model_name=config.provider.model, 
+            model_name=config.provider.model,
             voice_name=config.provider.voice
         )
     else:
+        logger.error(f"Proveedor desconocido en config: {config.provider.type}")
         raise ValueError(f"Proveedor desconocido: {config.provider.type}")
-    
+
     assistant = Assistant(
-        provider=provider, 
-        registry=registry, 
-        config=config, 
+        provider=provider,
+        registry=registry,
+        config=config,
         knowledge_manager=knowledge_manager,
         event_bus=event_bus
     )

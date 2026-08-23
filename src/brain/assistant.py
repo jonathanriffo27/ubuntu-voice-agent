@@ -2,242 +2,148 @@ import asyncio
 import os
 import sys
 import traceback
-import struct
+import contextlib
+from typing import List, Optional
 import pyaudio
-import warnings
-from google.genai import types
-from src.providers.base import BaseProvider
+
+from src.voice.constants import AUDIO_FORMAT, AUDIO_CHANNELS, AUDIO_IN_RATE, AUDIO_OUT_RATE, CHUNK_SIZE
+from src.voice.recorder import AudioRecorder
+from src.voice.player import AudioPlayer
+from src.voice.hotkeys import HotkeyListener
+from src.providers.base import (
+    BaseProvider, ProviderSession, AudioChunk, TextChunk,
+    ToolCallRequest, Interrupted, TurnComplete, ToolResponseItem
+)
 from src.brain.prompts import build_system_prompt
 from src.tools.registry import ToolRegistry
 from src.tools.base import ToolContext
 from src.knowledge.manager import KnowledgeManager
 from src.events.base import (
-    ConversationContext, SessionStarted, SessionEnded, VoiceListeningStarted, 
-    VoiceListeningStopped, SpeechRecognized, ToolStarted, ToolSucceeded, 
-    ToolFailed, ResponseGenerated, ErrorOccurred
+    ConversationContext, SessionStarted, SessionEnded, ToolStarted,
+    ToolSucceeded, ToolFailed, ResponseGenerated, ErrorOccurred
 )
 from src.events.bus import EventBus
+from src.utils.logging import get_logger
 
-AUDIO_FORMAT = pyaudio.paInt16
-AUDIO_CHANNELS = 1
-AUDIO_IN_RATE = 16000
-AUDIO_OUT_RATE = 24000
-CHUNK_SIZE = 512
+logger = get_logger("brain.assistant")
 
-def play_sound(sound_type):
-    import subprocess
-    sounds = {
-        "pause": "/usr/share/sounds/freedesktop/stereo/device-removed.oga",
-        "resume": "/usr/share/sounds/freedesktop/stereo/device-added.oga",
-        "processing": "/usr/share/sounds/freedesktop/stereo/audio-volume-change.oga"
-    }
-    if sound_type in sounds:
-        try:
-            subprocess.Popen(["pw-play", sounds[sound_type]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
 
 class Assistant:
-    def __init__(self, provider: BaseProvider, registry: ToolRegistry, config=None, knowledge_manager: KnowledgeManager = None, event_bus: EventBus = None):
+    def __init__(
+        self,
+        provider: BaseProvider,
+        registry: ToolRegistry,
+        config=None,
+        knowledge_manager: KnowledgeManager = None,
+        event_bus: EventBus = None,
+        max_reconnect_attempts: int = 5,
+        reconnect_initial_backoff: float = 1.0,
+        reconnect_max_backoff: float = 30.0
+    ):
         self.provider = provider
         self.registry = registry
         self.config = config
         self.knowledge_manager = knowledge_manager
         self.event_bus = event_bus or EventBus()
         self.conversation_context = ConversationContext()
-        
-        self.jarvis_is_speaking = False
-        self.processing_tool = False
-        self.is_paused = False
-        self.silence_threshold = None
+
+        self.max_reconnect_attempts = max_reconnect_attempts
+        self.reconnect_initial_backoff = reconnect_initial_backoff
+        self.reconnect_max_backoff = reconnect_max_backoff
+
         self._last_tool_call = {"name": None, "args": None, "count": 0}
-        
+
         self.p = None
         self.in_stream = None
         self.out_stream = None
-        self.oww_model = None
-        self.np = None
+        self.recorder: Optional[AudioRecorder] = None
+        self.player: Optional[AudioPlayer] = None
 
-    async def calibrate_microphone(self, duration=2.0):
-        print("🎤 Calibrando micrófono... (no hables)")
-        samples = []
-        total_frames = int(AUDIO_IN_RATE / CHUNK_SIZE * duration)
-        for _ in range(total_frames):
-            data = await asyncio.to_thread(self.in_stream.read, CHUNK_SIZE, exception_on_overflow=False)
-            shorts = struct.unpack('h' * (len(data) // 2), data)
-            rms = sum(abs(s) for s in shorts) / len(shorts) if shorts else 0
-            samples.append(rms)
-        
-        if not samples:
-            print("⚠️ No se pudo calibrar, usando umbral por defecto.")
-            return 12000
-        
-        avg_rms = sum(samples) / len(samples)
-        threshold = max(800, int(avg_rms * 2.5))
-        print(f"🎤 Calibración completa — Ruido ambiente: {int(avg_rms)} | Umbral: {threshold}")
-        return threshold
-
-    async def listen_audio(self, audio_queue_input, audio_queue_output):
-        silence_frames = 0
-        frames_per_second = AUDIO_IN_RATE / CHUNK_SIZE
-        max_silence_seconds = 1.0
-        user_spoke = False
-        
-        while True:
-            try:
-                if not self.in_stream.is_active():
-                    break
-                
-                data = await asyncio.to_thread(self.in_stream.read, CHUNK_SIZE, exception_on_overflow=False)
-                
-                if self.is_paused:
-                    audio_np = self.np.frombuffer(data, dtype=self.np.int16)
-                    prediction = self.oww_model.predict(audio_np)
-                    max_score = max(prediction.values()) if prediction else 0
-                    if max_score > 0.5:
-                        self.is_paused = False
-                        play_sound("resume")
-                        print(f"\r[REANUDADO ▶️] - ¡'Hey Atlas' detectado! Micrófono activado.      \n", end='', flush=True)
-                    await asyncio.sleep(0.001)
-                    continue
-                
-                if not self.processing_tool:
-                    shorts = struct.unpack('h' * (len(data) // 2), data)
-                    rms = sum(abs(s) for s in shorts) / len(shorts) if shorts else 0
-                    
-                    if self.jarvis_is_speaking:
-                        barge_in_threshold = self.silence_threshold
-                        if rms > barge_in_threshold:
-                            print("\n[🎙️ Interrupción de voz detectada]", flush=True)
-                            self.jarvis_is_speaking = False
-                            
-                            while not audio_queue_output.empty():
-                                try:
-                                    audio_queue_output.get_nowait()
-                                except asyncio.QueueEmpty:
-                                    break
-                            
-                            silence_frames = 0
-                            user_spoke = True
-                            await audio_queue_input.put(data)
-                    else:
-                        await audio_queue_input.put(data)
-                        
-                        if rms < self.silence_threshold:
-                            if user_spoke:
-                                silence_frames += 1
-                        else:
-                            silence_frames = 0
-                            if not user_spoke:
-                                self.event_bus.publish(VoiceListeningStarted(self.conversation_context))
-                            user_spoke = True
-                            
-                        if user_spoke and silence_frames > (frames_per_second * max_silence_seconds):
-                            await audio_queue_input.put("END_OF_TURN")
-                            self.event_bus.publish(VoiceListeningStopped(self.conversation_context))
-                            # En lugar de texto, notificamos que se terminó de escuchar
-                            self.event_bus.publish(SpeechRecognized(self.conversation_context, text="[Audio enviado]"))
-                            play_sound("processing")
-                            silence_frames = 0
-                            user_spoke = False
-                else:
-                    silence_frames = 0
-                    user_spoke = False
-                    
-                await asyncio.sleep(0)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                print(f"Error micro: {e}")
-                break
-
-    async def send_realtime(self, session, audio_queue_input):
+    async def send_realtime(self, session: ProviderSession, audio_queue_input: asyncio.Queue):
+        """Consume chunks de audio del micrófono y los envía al proveedor en tiempo real."""
         while True:
             try:
                 data = await audio_queue_input.get()
-                if self.processing_tool:
+                if self.recorder and self.recorder.processing_tool:
                     continue
                 if data == "END_OF_TURN":
-                    await session.send_client_content(turn_complete=True)
+                    await session.end_turn()
                     continue
-                await session.send_realtime_input(audio={"data": data, "mime_type": f"audio/pcm;rate={AUDIO_IN_RATE}"})
+                await session.send_audio(data, AUDIO_IN_RATE)
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                print(f"\n[CRÍTICO send_realtime]: {e}", flush=True)
+                logger.error(f"Error en send_realtime: {e}")
                 raise
 
-    async def play_audio(self, audio_queue_output):
-        while True:
-            try:
-                data = await asyncio.wait_for(audio_queue_output.get(), timeout=1.5)
-                if not self.jarvis_is_speaking:
-                    continue
-                await asyncio.to_thread(self.out_stream.write, data)
-                await asyncio.sleep(0.001)
-            except asyncio.TimeoutError:
-                self.jarvis_is_speaking = False
-            except Exception as e:
-                print(f"Error speaker: {e}")
-                break
-
-    async def receive_and_route(self, session, audio_queue_output, audio_queue_input):
+    async def receive_and_route(
+        self,
+        session: ProviderSession,
+        audio_queue_output: asyncio.Queue,
+        audio_queue_input: asyncio.Queue
+    ):
+        """Recibe eventos normalizados del modelo y enruta audio, texto y ejecución de herramientas."""
         printed_prefix = False
         try:
             while True:
-                async for msg in session.receive():
-                    if msg is None:
-                        continue
-                    sc = msg.server_content
-                    if sc is not None:
-                        msg_interrupted = False
-                        if sc.interrupted:
-                            self.jarvis_is_speaking = False
-                            msg_interrupted = True
-                            printed_prefix = False
-                            while not audio_queue_output.empty():
-                                try:
-                                    audio_queue_output.get_nowait()
-                                except asyncio.QueueEmpty:
-                                    break
-                        if sc.model_turn is not None and not msg_interrupted:
-                            self.jarvis_is_speaking = True
-                            for part in sc.model_turn.parts:
-                                if part.inline_data:
-                                    if self.jarvis_is_speaking:
-                                        audio_queue_output.put_nowait(part.inline_data.data)
-                                elif part.text:
-                                    if not printed_prefix:
-                                        printed_prefix = True
-                                    self.event_bus.publish(ResponseGenerated(self.conversation_context, text=part.text))
-                                await asyncio.sleep(0)
-                        if getattr(sc, 'turn_complete', False):
-                            self.jarvis_is_speaking = False
-                            if printed_prefix:
-                                sys.stdout.write("\n")
-                                printed_prefix = False
+                async for event in session.receive():
+                    if isinstance(event, Interrupted):
+                        if self.player:
+                            self.player.is_speaking = False
+                        printed_prefix = False
+                        while not audio_queue_output.empty():
+                            try:
+                                audio_queue_output.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
 
-                    if msg.tool_call is not None:
-                        self.processing_tool = True
-                        responses = []
-                        for fc in msg.tool_call.function_calls:
-                            args_dict = dict(fc.args) if fc.args else {}
-                            call_key = f"{fc.name}:{args_dict}"
-                            
+                    elif isinstance(event, AudioChunk):
+                        if self.player:
+                            self.player.is_speaking = True
+                            audio_queue_output.put_nowait(event.data)
+
+                    elif isinstance(event, TextChunk):
+                        if not printed_prefix:
+                            printed_prefix = True
+                        self.event_bus.publish(ResponseGenerated(self.conversation_context, text=event.text))
+
+                    elif isinstance(event, TurnComplete):
+                        if self.player:
+                            self.player.is_speaking = False
+                        if printed_prefix:
+                            sys.stdout.write("\n")
+                            printed_prefix = False
+
+                    elif isinstance(event, ToolCallRequest):
+                        if self.recorder:
+                            self.recorder.processing_tool = True
+                        responses: List[ToolResponseItem] = []
+
+                        for fc in event.calls:
+                            call_key = f"{fc.name}:{fc.args}"
+
                             if self._last_tool_call["name"] == call_key:
                                 self._last_tool_call["count"] += 1
                             else:
                                 self._last_tool_call["name"] = call_key
-                                self._last_tool_call["args"] = args_dict
+                                self._last_tool_call["args"] = fc.args
                                 self._last_tool_call["count"] = 1
-                                
+
                             if self._last_tool_call["count"] > 1 and fc.name != "obtener_estado_sistema":
-                                responses.append(types.FunctionResponse(name=fc.name, id=fc.id, response={"status": "success", "message": "Ignorado por duplicado."}))
+                                responses.append(
+                                    ToolResponseItem(
+                                        name=fc.name,
+                                        id=fc.id,
+                                        response={"status": "success", "message": "Ignorado por duplicado."}
+                                    )
+                                )
                                 continue
-                                
+
                             if fc.name != "obtener_estado_sistema":
-                                self.event_bus.publish(ToolStarted(self.conversation_context, tool_name=fc.name, arguments=args_dict))
-                            
+                                self.event_bus.publish(
+                                    ToolStarted(self.conversation_context, tool_name=fc.name, arguments=fc.args)
+                                )
+
                             tool = self.registry.get_tool(fc.name)
                             if tool:
                                 try:
@@ -246,38 +152,43 @@ class Assistant:
                                         event_bus=self.event_bus,
                                         conversation_context=self.conversation_context
                                     )
-                                    tool_result = await tool.execute(context, **args_dict)
-                                    
-                                    # Formatear la respuesta para Gemini
+                                    tool_result = await tool.execute(context, **fc.args)
+
                                     res_dict = {"result": tool_result.content}
-                                    
-                                    # Si la herramienta devuelve metadata (ej. imagen de la pantalla)
+
                                     if tool_result.metadata:
                                         if "inline_data" in tool_result.metadata:
                                             inline = tool_result.metadata["inline_data"]
                                             try:
                                                 import base64
                                                 data_bytes = base64.b64decode(inline["data"])
-                                                # En Gemini Live, las imágenes se envían como realtime_input de video
-                                                await session.send_realtime_input(
-                                                    video={"mime_type": inline["mime_type"], "data": data_bytes}
-                                                )
+                                                await session.send_video(data_bytes, inline["mime_type"])
                                                 res_dict["status"] = "Imagen adjuntada exitosamente al flujo de video."
                                             except Exception as ve:
                                                 res_dict["status"] = f"Error inyectando imagen: {ve}"
                                         else:
                                             res_dict.update(tool_result.metadata)
-                                    
+
                                     if fc.name != "obtener_estado_sistema":
-                                        self.event_bus.publish(ToolSucceeded(self.conversation_context, tool_name=fc.name, result=res_dict))
-                                    
-                                    responses.append(types.FunctionResponse(name=fc.name, id=fc.id, response=res_dict))
+                                        self.event_bus.publish(
+                                            ToolSucceeded(self.conversation_context, tool_name=fc.name, result=res_dict)
+                                        )
+
+                                    responses.append(ToolResponseItem(name=fc.name, id=fc.id, response=res_dict))
                                 except Exception as e:
-                                    self.event_bus.publish(ToolFailed(self.conversation_context, tool_name=fc.name, error=str(e)))
-                                    responses.append(types.FunctionResponse(name=fc.name, id=fc.id, response={"error": str(e)}))
+                                    self.event_bus.publish(
+                                        ToolFailed(self.conversation_context, tool_name=fc.name, error=str(e))
+                                    )
+                                    responses.append(ToolResponseItem(name=fc.name, id=fc.id, response={"error": str(e)}))
                             else:
-                                self.event_bus.publish(ErrorOccurred(self.conversation_context, error=f"Tool no encontrada: {fc.name}", source="Assistant"))
-                        
+                                self.event_bus.publish(
+                                    ErrorOccurred(
+                                        self.conversation_context,
+                                        error=f"Tool no encontrada: {fc.name}",
+                                        source="Assistant"
+                                    )
+                                )
+
                         if responses:
                             drained = 0
                             while not audio_queue_input.empty():
@@ -287,134 +198,134 @@ class Assistant:
                                 except asyncio.QueueEmpty:
                                     break
                             if drained > 0:
-                                print(f"🗑️ [DRAINED] {drained} mensajes descartados")
-                            
+                                logger.debug(f"🗑️ [DRAINED] {drained} mensajes descartados")
+
                             try:
-                                await session.send_tool_response(function_responses=responses)
+                                await session.send_tool_response(responses)
                             except Exception as e:
-                                print(f"\n[ERROR ENVIANDO RESPUESTA DE TOOL]: {e}")
-                        
-                        self.processing_tool = False
+                                logger.error(f"Error enviando respuesta de tool: {e}")
+
+                        if self.recorder:
+                            self.recorder.processing_tool = False
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            self.event_bus.publish(ErrorOccurred(self.conversation_context, error=str(e), source="Assistant: receive_and_route"))
+            self.event_bus.publish(
+                ErrorOccurred(self.conversation_context, error=str(e), source="Assistant: receive_and_route")
+            )
             raise
         finally:
-            self.jarvis_is_speaking = False
-            self.processing_tool = False
-
-    async def input_watcher(self, q_in):
-        import termios, tty
-        loop = asyncio.get_running_loop()
-        
-        def read_char():
-            fd = sys.stdin.fileno()
-            old_settings = termios.tcgetattr(fd)
-            try:
-                tty.setcbreak(fd)
-                return sys.stdin.read(1)
-            finally:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-        while True:
-            ch = await loop.run_in_executor(None, read_char)
-            ch = ch.lower()
-            if ch == ' ':
-                self.is_paused = not self.is_paused
-                play_sound("pause" if self.is_paused else "resume")
-                estado = "PAUSADO ⏸️" if self.is_paused else "REANUDADO ▶️"
-                print(f"\r[{estado}] - Micrófono {'desactivado' if self.is_paused else 'activado'}.\n", end='')
-            elif ch == 'l':
-                self.silence_threshold += 500
-                print(f"\r[🎤 UMBRAL] Aumentado a: {self.silence_threshold}\n", end='')
-            elif ch == 'j':
-                self.silence_threshold = max(0, self.silence_threshold - 500)
-                print(f"\r[🎤 UMBRAL] Reducido a: {self.silence_threshold}\n", end='')
-            elif ch == '\n' or ch == '\r':
-                try:
-                    await q_in.put("END_OF_TURN")
-                    play_sound("processing")
-                except Exception:
-                    pass
+            if self.player:
+                self.player.is_speaking = False
+            if self.recorder:
+                self.recorder.processing_tool = False
 
     async def run_async(self):
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        old_stderr = os.dup(sys.stderr.fileno())
-        sys.stderr.flush()
-        os.dup2(devnull, sys.stderr.fileno())
+        @contextlib.contextmanager
+        def suppress_stderr():
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            old_stderr = os.dup(2)
+            sys.stderr.flush()
+            os.dup2(devnull, 2)
+            try:
+                yield
+            finally:
+                os.dup2(old_stderr, 2)
+                os.close(devnull)
+                os.close(old_stderr)
 
-        try:
+        with suppress_stderr():
             self.p = pyaudio.PyAudio()
-        finally:
-            os.dup2(old_stderr, sys.stderr.fileno())
-            os.close(devnull)
-            os.close(old_stderr)
 
-        print("Cargando modelo de wake word (Hey Atlas)...")
-        try:
-            import openwakeword
-            from openwakeword.model import Model
-            import numpy as np
-            self.np = np
-            model_paths = [p for p in openwakeword.get_pretrained_model_paths() if 'hey_jarvis' in p]
-            self.oww_model = Model(wakeword_model_paths=model_paths)
-        except ImportError:
-            print("❌ ERROR: openwakeword no está instalado.")
-            sys.exit(1)
+        logger.info("Cargando modelo de wake word (Hey Atlas)...")
+        with suppress_stderr():
+            self.in_stream = self.p.open(
+                format=AUDIO_FORMAT,
+                channels=AUDIO_CHANNELS,
+                rate=AUDIO_IN_RATE,
+                input=True,
+                frames_per_buffer=CHUNK_SIZE
+            )
+            self.out_stream = self.p.open(
+                format=AUDIO_FORMAT,
+                channels=AUDIO_CHANNELS,
+                rate=AUDIO_OUT_RATE,
+                output=True,
+                frames_per_buffer=CHUNK_SIZE
+            )
 
-        self.in_stream = self.p.open(format=AUDIO_FORMAT, channels=AUDIO_CHANNELS, rate=AUDIO_IN_RATE, input=True, frames_per_buffer=CHUNK_SIZE)
-        self.out_stream = self.p.open(format=AUDIO_FORMAT, channels=AUDIO_CHANNELS, rate=AUDIO_OUT_RATE, output=True, frames_per_buffer=CHUNK_SIZE)
+        self.recorder = AudioRecorder(self.in_stream, self.event_bus, self.conversation_context)
+        self.recorder.load_wake_word()
+        await self.recorder.calibrate()
 
-        self.silence_threshold = await self.calibrate_microphone()
+        self.player = AudioPlayer(self.out_stream)
 
-        sys_prompt, ubicacion = build_system_prompt(self.knowledge_manager)
-        perfil = self.knowledge_manager.get_profile() if self.knowledge_manager else {}
-        notas = self.knowledge_manager.get_notes() if self.knowledge_manager else []
-        print(f"🌍 Ubicación detectada: {ubicacion}")
-        if perfil:
-            print(f"👤 Perfil cargado: {', '.join(f'{k}={v}' for k, v in perfil.items())}")
-        if notas:
-            print(f"💾 Notas cargadas: {len(notas)}")
+        sys_prompt, _ = build_system_prompt(self.knowledge_manager)
 
         q_in = asyncio.Queue()
         q_out = asyncio.Queue()
+        hotkey_listener = HotkeyListener(self.recorder, q_in)
 
-        print("Conectando al proveedor...")
+        attempt = 0
+        backoff = self.reconnect_initial_backoff
+
         try:
-            async with self.provider.connect(system_prompt=sys_prompt, tools=self.registry.get_all_tools()) as session:
-                self.event_bus.publish(SessionStarted(self.conversation_context))
-                
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", DeprecationWarning)
-                    await session.send(input="Iniciando sistema.", end_of_turn=True)
+            while attempt < self.max_reconnect_attempts:
+                attempt += 1
+                logger.info(f"Conectando al proveedor (intento {attempt}/{self.max_reconnect_attempts})...")
 
                 try:
-                    async with asyncio.TaskGroup() as tg:
-                        tg.create_task(self.listen_audio(q_in, q_out))
-                        tg.create_task(self.send_realtime(session, q_in))
-                        tg.create_task(self.play_audio(q_out))
-                        tg.create_task(self.receive_and_route(session, q_out, q_in))
-                        tg.create_task(self.input_watcher(q_in))
-                except ExceptionGroup as eg:
-                    for exc in eg.exceptions:
-                        if not isinstance(exc, asyncio.CancelledError):
-                            print(f"\n[CRASH]: {exc}")
-                            os._exit(1)
-        except KeyboardInterrupt:
-            print("\nDeteniendo...")
-        except Exception as e:
-            traceback.print_exc()
+                    async with self.provider.connect(
+                        system_prompt=sys_prompt,
+                        tools=self.registry.get_all_tools()
+                    ) as session:
+                        self.event_bus.publish(SessionStarted(self.conversation_context))
+                        await session.send_text("Iniciando sistema.", end_of_turn=True)
+
+                        # Reiniciar backoff tras conexión exitosa
+                        backoff = self.reconnect_initial_backoff
+                        logger.info("Conexión establecida con el proveedor.")
+
+                        try:
+                            async with asyncio.TaskGroup() as tg:
+                                tg.create_task(self.recorder.listen(q_in, q_out, self.player))
+                                tg.create_task(self.send_realtime(session, q_in))
+                                tg.create_task(self.player.play(q_out))
+                                tg.create_task(self.receive_and_route(session, q_out, q_in))
+                                tg.create_task(hotkey_listener.listen())
+                        except ExceptionGroup as eg:
+                            for exc in eg.exceptions:
+                                if isinstance(exc, asyncio.CancelledError):
+                                    return
+                                logger.error(f"Fallo en tarea concurrente: {exc}")
+                                raise exc
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    logger.info("Sesión finalizada por el usuario.")
+                    break
+                except Exception as e:
+                    logger.warning(f"Conexión con el proveedor interrumpida: {e}")
+                    if attempt >= self.max_reconnect_attempts:
+                        logger.critical(f"Se excedió el número máximo de reconexiones ({self.max_reconnect_attempts}).")
+                        break
+                    logger.info(f"Reintentando conexión en {backoff:.1f}s...")
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2.0, self.reconnect_max_backoff)
+
         finally:
             self.cleanup()
 
     def cleanup(self):
         try:
-            if self.in_stream and self.in_stream.is_active(): self.in_stream.stop_stream()
-            if self.out_stream and self.out_stream.is_active(): self.out_stream.stop_stream()
-            if self.in_stream: self.in_stream.close()
-            if self.out_stream: self.out_stream.close()
-            if self.p: self.p.terminate()
+            if self.in_stream and self.in_stream.is_active():
+                self.in_stream.stop_stream()
+            if self.out_stream and self.out_stream.is_active():
+                self.out_stream.stop_stream()
+            if self.in_stream:
+                self.in_stream.close()
+            if self.out_stream:
+                self.out_stream.close()
+            if self.p:
+                self.p.terminate()
         except Exception:
             pass
 

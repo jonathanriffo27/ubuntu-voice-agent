@@ -1,11 +1,11 @@
 import os
-import json
-import urllib.request
-import urllib.error
 import re
 from typing import Dict, Any
 
+import httpx
+
 from src.tools.base import BaseTool, ToolContext, ToolResult
+
 
 def _redact_secrets(text: str) -> str:
     redacted = re.sub(
@@ -14,6 +14,7 @@ def _redact_secrets(text: str) -> str:
         text
     )
     return redacted
+
 
 class BuscarEnInternetTool(BaseTool):
     @property
@@ -40,8 +41,7 @@ class BuscarEnInternetTool(BaseTool):
             
         print(f"\n🔍 [ATLAS BUSCANDO EN INTERNET (TAVILY)]: {query}")
         try:
-            url = 'https://api.tavily.com/search'
-            data = {
+            payload = {
                 'api_key': os.environ.get('TAVILY_API_KEY', ''),
                 'query': query,
                 'search_depth': 'basic',
@@ -50,13 +50,14 @@ class BuscarEnInternetTool(BaseTool):
                 'max_results': 3
             }
             
-            req = urllib.request.Request(url, data=json.dumps(data).encode('utf-8'), headers={'Content-Type': 'application/json'})
-            
-            # TODO: Idealmente esto debería hacerse de forma verdaderamente asíncrona usando aiohttp o httpx.
-            import asyncio
-            response = await asyncio.to_thread(urllib.request.urlopen, req, timeout=15)
-            
-            result = json.loads(response.read().decode('utf-8'))
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    'https://api.tavily.com/search',
+                    json=payload,
+                    headers={'Content-Type': 'application/json'}
+                )
+                response.raise_for_status()
+                result = response.json()
             
             output = f"Resultados de búsqueda para: {query}\n\n"
             answer = result.get('answer')
@@ -77,10 +78,9 @@ class BuscarEnInternetTool(BaseTool):
                 
             return ToolResult(success=True, content=safe_output)
             
-        except urllib.error.HTTPError as e:
-            err_msg = e.read().decode('utf-8') if hasattr(e, 'read') else str(e)
-            print(f"  ❌ [TAVILY] Error HTTP {e.code}: {err_msg[:100]}")
-            return ToolResult(success=False, content=f"Fallo en la búsqueda de Tavily: HTTP {e.code}")
+        except httpx.HTTPStatusError as e:
+            print(f"  ❌ [TAVILY] Error HTTP {e.response.status_code}")
+            return ToolResult(success=False, content=f"Fallo en la búsqueda de Tavily: HTTP {e.response.status_code}")
         except Exception as e:
             print(f"  ❌ [TAVILY] Error: {e}")
             return ToolResult(success=False, content=f"Fallo en la búsqueda: {str(e)}")

@@ -19,6 +19,5 @@ def discover_and_register_plugins(registry: ToolRegistry, dependencies: Dict[str
                 # Cada plugin debe exponer una función setup(registry, dependencies)
                 if hasattr(plugin_module, "setup"):
                     plugin_module.setup(registry, dependencies)
-                    print(f"🔌 [Plugin cargado]: {module_name}")
             except Exception as e:
                 print(f"⚠️ Error cargando plugin {module_name}: {e}")

@@ -11,4 +11,4 @@ memory:
   enabled: true
 
 vision:
-  enabled: false
+  enabled: true
