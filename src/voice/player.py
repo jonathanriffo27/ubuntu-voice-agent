@@ -1,5 +1,8 @@
 import asyncio
 import subprocess
+from src.utils.logging import get_logger
+
+logger = get_logger("voice.player")
 
 
 def play_sound(sound_type: str):
@@ -19,23 +22,43 @@ def play_sound(sound_type: str):
 
 
 class AudioPlayer:
-    """Reproduce audio recibido del modelo LLM."""
+    """Reproduce audio recibido del modelo LLM de forma fluida y sin microcortes."""
 
     def __init__(self, out_stream):
         self.out_stream = out_stream
         self.is_speaking = False
 
+    def stop_and_clear(self, audio_queue_output: asyncio.Queue):
+        """Detiene la reproducción y vacía la cola de audio pendiente (para interrupciones / barge-in)."""
+        self.is_speaking = False
+        while not audio_queue_output.empty():
+            try:
+                audio_queue_output.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
     async def play(self, audio_queue_output: asyncio.Queue):
-        """Bucle de reproducción de audio desde la cola."""
+        """
+        Bucle continuo de reproducción de audio.
+        Escribe directamente en el stream de PyAudio en un thread dedicado sin retrasos
+        artificiales para evitar buffer underruns y voz entrecortada.
+        """
         while True:
             try:
-                data = await asyncio.wait_for(audio_queue_output.get(), timeout=1.5)
-                if not self.is_speaking:
-                    continue
-                await asyncio.to_thread(self.out_stream.write, data)
-                await asyncio.sleep(0.001)
-            except asyncio.TimeoutError:
+                # Esperar chunk de audio
+                data = await audio_queue_output.get()
+                self.is_speaking = True
+
+                # Escribir chunk al hardware de audio (bloqueante en thread worker)
+                await asyncio.to_thread(self.out_stream.write, data, exception_on_underflow=False)
+
+                # Si no quedan más chunks en la cola, marcar fin de habla
+                if audio_queue_output.empty():
+                    self.is_speaking = False
+            except asyncio.CancelledError:
                 self.is_speaking = False
-            except Exception as e:
-                print(f"Error speaker: {e}")
                 break
+            except Exception as e:
+                logger.debug(f"Error en reproducción de audio: {e}")
+                self.is_speaking = False
+                await asyncio.sleep(0.01)

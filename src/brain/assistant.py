@@ -100,18 +100,11 @@ class Assistant:
                 async for event in session.receive():
                     if isinstance(event, Interrupted):
                         if self.player:
-                            self.player.is_speaking = False
+                            self.player.stop_and_clear(audio_queue_output)
                         printed_prefix = False
-                        while not audio_queue_output.empty():
-                            try:
-                                audio_queue_output.get_nowait()
-                            except asyncio.QueueEmpty:
-                                break
 
                     elif isinstance(event, AudioChunk):
-                        if self.player:
-                            self.player.is_speaking = True
-                            audio_queue_output.put_nowait(event.data)
+                        audio_queue_output.put_nowait(event.data)
 
                     elif isinstance(event, TextChunk):
                         if not printed_prefix:
@@ -119,8 +112,6 @@ class Assistant:
                         self.event_bus.publish(ResponseGenerated(self.conversation_context, text=event.text))
 
                     elif isinstance(event, TurnComplete):
-                        if self.player:
-                            self.player.is_speaking = False
                         if printed_prefix:
                             sys.stdout.write("\n")
                             printed_prefix = False
@@ -305,7 +296,7 @@ class Assistant:
                 channels=AUDIO_CHANNELS,
                 rate=AUDIO_OUT_RATE,
                 output=True,
-                frames_per_buffer=CHUNK_SIZE
+                frames_per_buffer=1024
             )
 
         self.recorder = AudioRecorder(self.in_stream, self.event_bus, self.conversation_context)
