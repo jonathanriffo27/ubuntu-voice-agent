@@ -14,7 +14,7 @@ class GoogleGroundingSearchEngine(BaseSearchEngine):
     Optimizado con timeout estricto de 2.5s para no demorar la respuesta de voz.
     """
 
-    def __init__(self, model: str = "gemini-2.5-flash", timeout: float = 2.5):
+    def __init__(self, model: str = "gemini-3.7-flash", timeout: float = 2.5):
         self.model = model
         self.timeout = timeout
 
