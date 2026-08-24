@@ -283,6 +283,11 @@ class Assistant:
             except Exception as e:
                 logger.error(f"Error iniciando Web Overlay HUD: {e}")
 
+        # Asegurar túnel SSH a CLIProxy en segundo plano (0ms bloqueo en arranque)
+        if self.config and getattr(self.config, 'developer_agent', None) and self.config.developer_agent.enabled:
+            from src.agents.tunnel import ensure_cliproxy_tunnel
+            asyncio.create_task(ensure_cliproxy_tunnel())
+
         with suppress_stderr():
             self.p = pyaudio.PyAudio()
 
