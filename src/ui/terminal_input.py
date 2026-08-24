@@ -139,10 +139,13 @@ class TerminalInteractionManager:
         if line:
             if not self._history or self._history[-1] != line:
                 self._history.append(line)
-            print(f"\n\033[36m│\033[0m \033[1m👤 Tú:\033[0m {line}")
+            # Reemplazar la línea tipeada en el mismo lugar sin duplicar renglón
+            sys.stdout.write(f"\r\033[K\033[36m│\033[0m \033[1m👤 Tú:\033[0m {line}\n")
+            sys.stdout.flush()
             await self.assistant.send_text_message(line)
         else:
-            print()
+            sys.stdout.write("\n")
+            sys.stdout.flush()
 
     async def listen(self):
         """Bucle asíncrono no bloqueante de captura y decodificación de teclado."""
