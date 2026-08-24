@@ -27,11 +27,13 @@ class TerminalInteractionManager:
         self,
         assistant,
         recorder=None,
-        approval_manager=None
+        approval_manager=None,
+        audio_queue_input=None
     ):
         self.assistant = assistant
         self.recorder = recorder
         self.approval_manager = approval_manager
+        self.audio_queue_input = audio_queue_input
 
         self._buffer: List[str] = []
         self._cursor_pos: int = 0

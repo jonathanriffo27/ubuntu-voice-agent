@@ -28,8 +28,8 @@ class AudioRecorder:
         self.oww_model = None
         self.np = None
 
-    def load_wake_word(self):
-        """Carga el modelo openwakeword para 'Hey Atlas'."""
+    def _load_wake_word_sync(self):
+        """Carga el modelo openwakeword para 'Hey Atlas' de forma síncrona."""
         try:
             import warnings
             with warnings.catch_warnings():
@@ -44,10 +44,14 @@ class AudioRecorder:
             logger.error("openwakeword o numpy no están instalados.")
             sys.exit(1)
 
-    async def calibrate(self, duration: float = 0.5) -> int:
-        """Calibra dinámicamente el umbral de silencio según el ruido ambiental."""
+    async def load_wake_word(self):
+        """Carga el modelo openwakeword en segundo plano sin bloquear el loop de eventos."""
+        await asyncio.to_thread(self._load_wake_word_sync)
+
+    async def calibrate(self, duration: float = 0.25) -> int:
+        """Calibra dinámicamente el umbral de silencio según el ruido ambiental (250ms optimizado)."""
         samples = []
-        total_frames = int(AUDIO_IN_RATE / CHUNK_SIZE * duration)
+        total_frames = max(4, int(AUDIO_IN_RATE / CHUNK_SIZE * duration))
         for _ in range(total_frames):
             data = await asyncio.to_thread(self.in_stream.read, CHUNK_SIZE, exception_on_overflow=False)
             shorts = struct.unpack('h' * (len(data) // 2), data)
@@ -61,7 +65,7 @@ class AudioRecorder:
         avg_rms = sum(samples) / len(samples)
         threshold = max(800, int(avg_rms * 2.5))
         self.silence_threshold = threshold
-        logger.info(f"Micrófono calibrado. Umbral RMS base: {threshold}")
+        logger.info(f"Micrófono calibrado en {duration}s. Umbral RMS base: {threshold}")
         return threshold
 
     async def listen(self, audio_queue_input: asyncio.Queue, audio_queue_output: asyncio.Queue, player=None):
