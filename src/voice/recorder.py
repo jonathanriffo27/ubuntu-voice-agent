@@ -49,22 +49,25 @@ class AudioRecorder:
         """Carga el modelo openwakeword en segundo plano sin bloquear el loop de eventos."""
         await asyncio.to_thread(self._load_wake_word_sync)
 
-    async def calibrate(self, duration: float = 0.35) -> int:
+    async def calibrate(self, max_drain_frames: int = 25, sample_frames: int = 15) -> int:
         """
         Calibra dinámicamente el umbral de silencio según el ruido ambiental real:
-        1. Descarta los primeros buffers de inicialización de hardware ALSA (warm-up / AGC settling).
-        2. Calcula la energía RMS real (Root Mean Square).
-        3. Usa la mediana/percentil para no contaminar el umbral con ruidos esporádicos.
-        4. Establece un umbral saludable adaptativo entre 1200 y 6000 RMS.
+        1. Drena de forma adaptativa los transitorios de hardware de ALSA/AGC hasta que la señal se estabilice (< 5000 RMS).
+        2. Muestrea 15 frames limpios de ruido ambiente real.
+        3. Usa el percentil 25 para capturar el piso de ruido real de la habitación sin sesgo por ruidos.
+        4. Calcula un umbral óptimo de voz (1.7x ruido base + 350) con clamp seguro entre 1200 y 3500 RMS.
         """
-        # 1. Warm-up: Drenar buffers iniciales de settling del hardware (8 frames ≈ 250ms)
-        warmup_frames = 8
-        for _ in range(warmup_frames):
-            await asyncio.to_thread(self.in_stream.read, CHUNK_SIZE, exception_on_overflow=False)
+        # 1. Drenaje adaptativo de transitorios de hardware
+        for _ in range(max_drain_frames):
+            data = await asyncio.to_thread(self.in_stream.read, CHUNK_SIZE, exception_on_overflow=False)
+            shorts = struct.unpack('h' * (len(data) // 2), data)
+            if shorts:
+                rms = math.sqrt(sum(s * s for s in shorts) / len(shorts))
+                if rms < 5000:
+                    break
 
         # 2. Muestreo de ruido ambiente estabilizado
         samples = []
-        sample_frames = max(6, int(AUDIO_IN_RATE / CHUNK_SIZE * duration))
         for _ in range(sample_frames):
             data = await asyncio.to_thread(self.in_stream.read, CHUNK_SIZE, exception_on_overflow=False)
             shorts = struct.unpack('h' * (len(data) // 2), data)
@@ -73,22 +76,23 @@ class AudioRecorder:
                 samples.append(rms)
 
         if not samples:
-            self.silence_threshold = 2000
-            return 2000
+            self.silence_threshold = 2200
+            return 2200
 
-        # 3. Mediana de ruido ambiente
+        # 3. Percentil 25 del piso de ruido ambiental
         samples.sort()
-        noise_floor = samples[len(samples) // 2]
+        p25_index = max(0, len(samples) // 4)
+        noise_floor = samples[p25_index]
 
-        # 4. Umbral adaptado: 1.8x el piso de ruido ambiente con límites saludables
-        threshold = int(noise_floor * 1.8 + 300)
-        clamped_threshold = min(6000, max(1200, threshold))
+        # 4. Umbral de voz adaptado (1.7x ruido base + 350)
+        threshold = int(noise_floor * 1.7 + 350)
+        clamped_threshold = min(3500, max(1200, threshold))
         self.silence_threshold = clamped_threshold
 
         if hasattr(self, 'vad') and self.vad:
             self.vad._noise_energy = noise_floor
 
-        logger.info(f"Micrófono calibrado (piso de ruido: {int(noise_floor)} RMS). Umbral VAD establecido: {clamped_threshold}")
+        logger.info(f"Micrófono calibrado (piso de ruido real: {int(noise_floor)} RMS) -> Umbral VAD: {clamped_threshold}")
         return clamped_threshold
 
     async def listen(self, audio_queue_input: asyncio.Queue, audio_queue_output: asyncio.Queue, player=None):

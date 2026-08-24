@@ -312,7 +312,7 @@ class Assistant:
         # Inicializar modelo de wake word y calibración de micrófono en paralelo
         await asyncio.gather(
             self.recorder.load_wake_word(),
-            self.recorder.calibrate(duration=0.25)
+            self.recorder.calibrate()
         )
 
         self.player = AudioPlayer(self.out_stream)

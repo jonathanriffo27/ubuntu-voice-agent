@@ -46,9 +46,9 @@ async def test_audio_recorder_calibration():
     mock_stream.read.return_value = mock_data
 
     recorder = AudioRecorder(mock_stream, EventBus(), ConversationContext())
-    threshold = await recorder.calibrate(duration=0.1)
+    threshold = await recorder.calibrate(max_drain_frames=4, sample_frames=6)
 
     assert threshold >= 1200
-    assert threshold <= 6000
+    assert threshold <= 3500
     assert recorder.silence_threshold == threshold
 
