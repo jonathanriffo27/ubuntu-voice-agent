@@ -2,6 +2,8 @@ import asyncio
 import math
 import struct
 import sys
+import time
+import warnings
 from src.voice.constants import AUDIO_IN_RATE, CHUNK_SIZE
 from src.events.base import ConversationContext, VoiceListeningStarted, VoiceListeningStopped, SpeechRecognized, ModelThinkingStarted
 from src.events.bus import EventBus
@@ -25,14 +27,13 @@ class AudioRecorder:
         self.processing_tool = False
         self.vad = VoiceActivityDetector(sample_rate=AUDIO_IN_RATE)
 
-        # Modelo Wake Word
+        # Modelo Wake Word (se carga en segundo plano)
         self.oww_model = None
         self.np = None
 
     def _load_wake_word_sync(self):
-        """Carga el modelo openwakeword para 'Hey Atlas' de forma síncrona."""
+        """Carga el modelo openwakeword para 'Hey Atlas' de forma síncrona en hilo worker."""
         try:
-            import warnings
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=UserWarning)
                 import openwakeword
@@ -43,7 +44,6 @@ class AudioRecorder:
                 self.oww_model = Model(wakeword_model_paths=model_paths)
         except ImportError:
             logger.error("openwakeword o numpy no están instalados.")
-            sys.exit(1)
 
     async def load_wake_word(self):
         """Carga el modelo openwakeword en segundo plano sin bloquear el loop de eventos."""
@@ -96,9 +96,8 @@ class AudioRecorder:
         return clamped_threshold
 
     async def listen(self, audio_queue_input: asyncio.Queue, audio_queue_output: asyncio.Queue, player=None):
-        """Bucle principal de escucha con VAD inteligente, wake word y detección de interrupciones (barge-in)."""
+        """Bucle principal de escucha con VAD inteligente, wake word y aislamiento de eco acústico."""
         silence_frames = 0
-        barge_in_counter = 0
         frames_per_second = AUDIO_IN_RATE / CHUNK_SIZE
         max_silence_seconds = 0.9
         user_spoke = False
@@ -125,48 +124,37 @@ class AudioRecorder:
 
                 if not self.processing_tool:
                     is_speaking = player.is_speaking if player else False
+                    time_since_speech = time.time() - getattr(player, 'last_speech_time', 0.0) if player else 999.0
 
-                    if is_speaking:
-                        # Mientras Atlas habla por los parlantes, elevar el umbral para evitar que el micrófono escuche los propios parlantes (Eco Acústico)
-                        # y exigir al menos 6 frames consecutivos (~200ms) de voz fuerte para confirmar un barge-in intencional
-                        barge_threshold = max(4500.0, (self.silence_threshold or 2500.0) * 2.2)
-                        is_loud_speech = self.vad.is_speech(data, current_threshold=barge_threshold)
+                    # 1. Aislamiento de Eco Acústico y Reverberación (Half-Duplex seguro):
+                    # Mientras Atlas emite audio por los parlantes o en los 350ms posteriores (cola de eco),
+                    # se descartan los paquetes de micrófono para evitar que Atlas se escuche a sí mismo y se auto-interrumpa
+                    if is_speaking or time_since_speech < 0.35:
+                        silence_frames = 0
+                        user_spoke = False
+                        continue
 
-                        if is_loud_speech:
-                            barge_in_counter += 1
-                        else:
-                            barge_in_counter = 0
+                    # 2. Captura activa de voz de usuario en silencio
+                    is_voice = self.vad.is_speech(data, current_threshold=self.silence_threshold)
+                    await audio_queue_input.put(data)
 
-                        if barge_in_counter >= 6:
-                            logger.info("🎙️ Interrupción de usuario confirmada (Barge-in intencional)")
-                            barge_in_counter = 0
-                            if player:
-                                player.stop_and_clear(audio_queue_output)
-                            silence_frames = 0
-                            user_spoke = True
-                            await audio_queue_input.put(data)
+                    if not is_voice:
+                        if user_spoke:
+                            silence_frames += 1
                     else:
-                        barge_in_counter = 0
-                        is_voice = self.vad.is_speech(data, current_threshold=self.silence_threshold)
-                        await audio_queue_input.put(data)
+                        silence_frames = 0
+                        if not user_spoke:
+                            self.event_bus.publish(VoiceListeningStarted(self.conversation_context))
+                        user_spoke = True
 
-                        if not is_voice:
-                            if user_spoke:
-                                silence_frames += 1
-                        else:
-                            silence_frames = 0
-                            if not user_spoke:
-                                self.event_bus.publish(VoiceListeningStarted(self.conversation_context))
-                            user_spoke = True
-
-                        if user_spoke and silence_frames > (frames_per_second * max_silence_seconds):
-                            await audio_queue_input.put("END_OF_TURN")
-                            self.event_bus.publish(VoiceListeningStopped(self.conversation_context))
-                            self.event_bus.publish(SpeechRecognized(self.conversation_context, text="[Audio enviado]"))
-                            self.event_bus.publish(ModelThinkingStarted(self.conversation_context))
-                            play_sound("processing")
-                            silence_frames = 0
-                            user_spoke = False
+                    if user_spoke and silence_frames > (frames_per_second * max_silence_seconds):
+                        await audio_queue_input.put("END_OF_TURN")
+                        self.event_bus.publish(VoiceListeningStopped(self.conversation_context))
+                        self.event_bus.publish(SpeechRecognized(self.conversation_context, text="[Audio enviado]"))
+                        self.event_bus.publish(ModelThinkingStarted(self.conversation_context))
+                        play_sound("processing")
+                        silence_frames = 0
+                        user_spoke = False
                 else:
                     silence_frames = 0
                     user_spoke = False
