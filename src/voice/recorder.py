@@ -1,4 +1,5 @@
 import asyncio
+import math
 import struct
 import sys
 from src.voice.constants import AUDIO_IN_RATE, CHUNK_SIZE
@@ -48,25 +49,47 @@ class AudioRecorder:
         """Carga el modelo openwakeword en segundo plano sin bloquear el loop de eventos."""
         await asyncio.to_thread(self._load_wake_word_sync)
 
-    async def calibrate(self, duration: float = 0.25) -> int:
-        """Calibra dinámicamente el umbral de silencio según el ruido ambiental (250ms optimizado)."""
+    async def calibrate(self, duration: float = 0.35) -> int:
+        """
+        Calibra dinámicamente el umbral de silencio según el ruido ambiental real:
+        1. Descarta los primeros buffers de inicialización de hardware ALSA (warm-up / AGC settling).
+        2. Calcula la energía RMS real (Root Mean Square).
+        3. Usa la mediana/percentil para no contaminar el umbral con ruidos esporádicos.
+        4. Establece un umbral saludable adaptativo entre 1200 y 6000 RMS.
+        """
+        # 1. Warm-up: Drenar buffers iniciales de settling del hardware (8 frames ≈ 250ms)
+        warmup_frames = 8
+        for _ in range(warmup_frames):
+            await asyncio.to_thread(self.in_stream.read, CHUNK_SIZE, exception_on_overflow=False)
+
+        # 2. Muestreo de ruido ambiente estabilizado
         samples = []
-        total_frames = max(4, int(AUDIO_IN_RATE / CHUNK_SIZE * duration))
-        for _ in range(total_frames):
+        sample_frames = max(6, int(AUDIO_IN_RATE / CHUNK_SIZE * duration))
+        for _ in range(sample_frames):
             data = await asyncio.to_thread(self.in_stream.read, CHUNK_SIZE, exception_on_overflow=False)
             shorts = struct.unpack('h' * (len(data) // 2), data)
-            rms = sum(abs(s) for s in shorts) / len(shorts) if shorts else 0
-            samples.append(rms)
+            if shorts:
+                rms = math.sqrt(sum(s * s for s in shorts) / len(shorts))
+                samples.append(rms)
 
         if not samples:
-            self.silence_threshold = 12000
-            return 12000
+            self.silence_threshold = 2000
+            return 2000
 
-        avg_rms = sum(samples) / len(samples)
-        threshold = max(800, int(avg_rms * 2.5))
-        self.silence_threshold = threshold
-        logger.info(f"Micrófono calibrado en {duration}s. Umbral RMS base: {threshold}")
-        return threshold
+        # 3. Mediana de ruido ambiente
+        samples.sort()
+        noise_floor = samples[len(samples) // 2]
+
+        # 4. Umbral adaptado: 1.8x el piso de ruido ambiente con límites saludables
+        threshold = int(noise_floor * 1.8 + 300)
+        clamped_threshold = min(6000, max(1200, threshold))
+        self.silence_threshold = clamped_threshold
+
+        if hasattr(self, 'vad') and self.vad:
+            self.vad._noise_energy = noise_floor
+
+        logger.info(f"Micrófono calibrado (piso de ruido: {int(noise_floor)} RMS). Umbral VAD establecido: {clamped_threshold}")
+        return clamped_threshold
 
     async def listen(self, audio_queue_input: asyncio.Queue, audio_queue_output: asyncio.Queue, player=None):
         """Bucle principal de escucha con VAD inteligente, wake word y detección de interrupciones (barge-in)."""

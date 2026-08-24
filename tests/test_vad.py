@@ -1,5 +1,6 @@
-import struct
 import math
+import struct
+import pytest
 from src.voice.vad import VoiceActivityDetector
 
 
@@ -28,3 +29,26 @@ def test_vad_impulsive_click_rejection():
 
     # El VAD debe rechazar el clic por crest factor anómalo (> 9.5)
     assert vad.is_speech(click_chunk, current_threshold=500.0) is False
+
+
+@pytest.mark.asyncio
+async def test_audio_recorder_calibration():
+    import pytest
+    from unittest.mock import MagicMock
+    from src.voice.recorder import AudioRecorder
+    from src.events.bus import EventBus
+    from src.events.base import ConversationContext
+
+    mock_stream = MagicMock()
+    # Generar muestras de audio de ruido ambiente bajo (~800 RMS)
+    samples = [int(800 * math.sin(2 * math.pi * 100 * i / 16000)) for i in range(512)]
+    mock_data = struct.pack('h' * 512, *samples)
+    mock_stream.read.return_value = mock_data
+
+    recorder = AudioRecorder(mock_stream, EventBus(), ConversationContext())
+    threshold = await recorder.calibrate(duration=0.1)
+
+    assert threshold >= 1200
+    assert threshold <= 6000
+    assert recorder.silence_threshold == threshold
+
