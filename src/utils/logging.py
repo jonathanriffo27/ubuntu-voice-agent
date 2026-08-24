@@ -26,22 +26,30 @@ class ColoredFormatter(logging.Formatter):
 
 
 def setup_logging(
-    level: int = logging.INFO,
-    log_file: Optional[str] = "latest_session.log"
+    console_level: int = logging.WARNING,
+    file_level: int = logging.DEBUG,
+    log_file: Optional[str] = "latest_session.log",
+    level: Optional[int] = None
 ) -> logging.Logger:
     """
     Configura el sistema de logging estructurado centralizado para Atlas.
+    Por defecto, mantiene la consola limpia (solo advertencias y errores) y guarda
+    todos los detalles de depuración en el archivo de log.
     """
+    if level is not None:
+        console_level = level
+        file_level = level
+
     root_logger = logging.getLogger("atlas")
-    root_logger.setLevel(level)
+    root_logger.setLevel(min(console_level, file_level))
 
-    # Evitar duplicar handlers si ya se configuró
+    # Limpiar handlers previos si existían
     if root_logger.handlers:
-        return root_logger
+        root_logger.handlers.clear()
 
-    # Handler de Consola
+    # Handler de Consola (discreto y limpio)
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(level)
+    console_handler.setLevel(console_level)
     console_fmt = ColoredFormatter(
         fmt="%(asctime)s [%(levelname_colored)s] [%(name)s]: %(message)s",
         datefmt="%H:%M:%S"
@@ -49,11 +57,11 @@ def setup_logging(
     console_handler.setFormatter(console_fmt)
     root_logger.addHandler(console_handler)
 
-    # Handler de Archivo (sin colores ANSI)
+    # Handler de Archivo (completo con timestamps y números de línea)
     if log_file:
         try:
             file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
-            file_handler.setLevel(logging.DEBUG)
+            file_handler.setLevel(file_level)
             file_fmt = logging.Formatter(
                 fmt="%(asctime)s [%(levelname)s] [%(name)s] (%(filename)s:%(lineno)d): %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S"

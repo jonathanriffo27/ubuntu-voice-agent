@@ -1,10 +1,15 @@
+"""
+[DEPRECATED] Este módulo ha sido reemplazado por TerminalInteractionManager en src/ui/terminal_input.py,
+el cual proporciona captura unificada de teclado, prompts de texto, edición en línea,
+historial, aprobaciones HITL y atajos avanzados sin colisiones de stdin.
+"""
 import asyncio
 import sys
 from src.voice.player import play_sound
 
 
 class HotkeyListener:
-    """Escucha teclas en modo raw terminal para controles del asistente."""
+    """[LEGACY] Escucha teclas en modo raw terminal para controles del asistente."""
 
     def __init__(self, recorder, audio_queue_input: asyncio.Queue):
         self.recorder = recorder

@@ -8,8 +8,7 @@ import pyaudio
 
 from src.voice.constants import AUDIO_FORMAT, AUDIO_CHANNELS, AUDIO_IN_RATE, AUDIO_OUT_RATE, CHUNK_SIZE
 from src.voice.recorder import AudioRecorder
-from src.voice.player import AudioPlayer
-from src.voice.hotkeys import HotkeyListener
+from src.voice.player import AudioPlayer, play_sound
 from src.providers.base import (
     BaseProvider, ProviderSession, AudioChunk, TextChunk,
     ToolCallRequest, Interrupted, TurnComplete, ToolResponseItem
@@ -23,6 +22,7 @@ from src.events.base import (
     ToolSucceeded, ToolFailed, ResponseGenerated, ErrorOccurred
 )
 from src.events.bus import EventBus
+from src.ui.terminal_input import TerminalInteractionManager
 from src.utils.logging import get_logger
 
 logger = get_logger("brain.assistant")
@@ -36,6 +36,10 @@ class Assistant:
         config=None,
         knowledge_manager: KnowledgeManager = None,
         event_bus: EventBus = None,
+        mcp_manager=None,
+        overlay_server=None,
+        reminder_scheduler=None,
+        approval_manager=None,
         max_reconnect_attempts: int = 5,
         reconnect_initial_backoff: float = 1.0,
         reconnect_max_backoff: float = 30.0
@@ -46,6 +50,10 @@ class Assistant:
         self.knowledge_manager = knowledge_manager
         self.event_bus = event_bus or EventBus()
         self.conversation_context = ConversationContext()
+        self.mcp_manager = mcp_manager
+        self.overlay_server = overlay_server
+        self.reminder_scheduler = reminder_scheduler
+        self.approval_manager = approval_manager
 
         self.max_reconnect_attempts = max_reconnect_attempts
         self.reconnect_initial_backoff = reconnect_initial_backoff
@@ -58,6 +66,7 @@ class Assistant:
         self.out_stream = None
         self.recorder: Optional[AudioRecorder] = None
         self.player: Optional[AudioPlayer] = None
+        self._active_session: Optional[ProviderSession] = None
 
     async def send_realtime(self, session: ProviderSession, audio_queue_input: asyncio.Queue):
         """Consume chunks de audio del micrófono y los envía al proveedor en tiempo real."""
@@ -210,15 +219,31 @@ class Assistant:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            self.event_bus.publish(
-                ErrorOccurred(self.conversation_context, error=str(e), source="Assistant: receive_and_route")
-            )
+            err_msg = str(e)
+            if "1008" not in err_msg and "aborted" not in err_msg.lower() and "connection" not in err_msg.lower():
+                self.event_bus.publish(
+                    ErrorOccurred(self.conversation_context, error=err_msg, source="Assistant: receive_and_route")
+                )
+            logger.debug(f"receive_and_route finalizado: {e}")
             raise
         finally:
             if self.player:
                 self.player.is_speaking = False
             if self.recorder:
                 self.recorder.processing_tool = False
+
+    async def send_text_message(self, text: str) -> None:
+        """Permite enviar mensajes de texto al modelo (desde el HUD web o API)."""
+        if self._active_session:
+            logger.info(f"💬 [HUD -> Atlas]: {text}")
+            await self._active_session.send_text(text, end_of_turn=True)
+
+    def toggle_microphone_pause(self) -> None:
+        """Pausa o reanuda el micrófono."""
+        if self.recorder:
+            self.recorder.is_paused = not self.recorder.is_paused
+            state = "PAUSADO ⏸️" if self.recorder.is_paused else "REANUDADO ▶️"
+            logger.info(f"Estado micrófono alternado: {state}")
 
     async def run_async(self):
         @contextlib.contextmanager
@@ -233,6 +258,28 @@ class Assistant:
                 os.dup2(old_stderr, 2)
                 os.close(devnull)
                 os.close(old_stderr)
+
+        # Iniciar servidores MCP si están configurados
+        if self.mcp_manager and self.config and getattr(self.config, 'mcp_servers', None):
+            try:
+                await self.mcp_manager.load_servers(self.config.mcp_servers, self.registry)
+            except Exception as e:
+                logger.error(f"Error cargando servidores MCP: {e}")
+
+        # Iniciar motor de recordatorios
+        if self.reminder_scheduler:
+            self.reminder_scheduler.start()
+
+        # Iniciar servidor de Overlay HUD si está habilitado
+        if self.overlay_server and self.config:
+            self.overlay_server.on_user_input = self.send_text_message
+            self.overlay_server.on_toggle_pause = self.toggle_microphone_pause
+            ui_cfg = getattr(self.config, 'ui', None)
+            auto_open = getattr(ui_cfg, 'auto_open_browser', False) if ui_cfg else False
+            try:
+                await self.overlay_server.start(auto_open=auto_open)
+            except Exception as e:
+                logger.error(f"Error iniciando Web Overlay HUD: {e}")
 
         with suppress_stderr():
             self.p = pyaudio.PyAudio()
@@ -264,7 +311,6 @@ class Assistant:
 
         q_in = asyncio.Queue()
         q_out = asyncio.Queue()
-        hotkey_listener = HotkeyListener(self.recorder, q_in)
 
         attempt = 0
         backoff = self.reconnect_initial_backoff
@@ -279,12 +325,24 @@ class Assistant:
                         system_prompt=sys_prompt,
                         tools=self.registry.get_all_tools()
                     ) as session:
+                        self._active_session = session
                         self.event_bus.publish(SessionStarted(self.conversation_context))
-                        await session.send_text("Iniciando sistema.", end_of_turn=True)
+                        play_sound("ready")
+                        await session.send_text(
+                            "[DIRECTIVA INICIAL: Di únicamente una frase corta confirmando que estás en línea y listo (ejemplo: 'Sistema Atlas en línea y listo'). Prohibido ejecutar herramientas o búsquedas.]",
+                            end_of_turn=True
+                        )
 
                         # Reiniciar backoff tras conexión exitosa
                         backoff = self.reconnect_initial_backoff
                         logger.info("Conexión establecida con el proveedor.")
+
+                        terminal_manager = TerminalInteractionManager(
+                            assistant=self,
+                            recorder=self.recorder,
+                            approval_manager=self.approval_manager,
+                            audio_queue_input=q_in
+                        )
 
                         try:
                             async with asyncio.TaskGroup() as tg:
@@ -292,7 +350,7 @@ class Assistant:
                                 tg.create_task(self.send_realtime(session, q_in))
                                 tg.create_task(self.player.play(q_out))
                                 tg.create_task(self.receive_and_route(session, q_out, q_in))
-                                tg.create_task(hotkey_listener.listen())
+                                tg.create_task(terminal_manager.listen())
                         except ExceptionGroup as eg:
                             for exc in eg.exceptions:
                                 if isinstance(exc, asyncio.CancelledError):
@@ -310,24 +368,54 @@ class Assistant:
                     logger.info(f"Reintentando conexión en {backoff:.1f}s...")
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2.0, self.reconnect_max_backoff)
+                finally:
+                    self._active_session = None
 
         finally:
-            self.cleanup()
+            await self.cleanup_async()
 
-    def cleanup(self):
+    async def cleanup_async(self):
+        """Limpieza asíncrona de recursos de audio, HUD, recordatorios y MCP."""
         try:
-            if self.in_stream and self.in_stream.is_active():
-                self.in_stream.stop_stream()
-            if self.out_stream and self.out_stream.is_active():
-                self.out_stream.stop_stream()
-            if self.in_stream:
-                self.in_stream.close()
-            if self.out_stream:
-                self.out_stream.close()
-            if self.p:
-                self.p.terminate()
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            old_stderr = os.dup(2)
+            sys.stderr.flush()
+            os.dup2(devnull, 2)
+            try:
+                if self.in_stream and self.in_stream.is_active():
+                    self.in_stream.stop_stream()
+                if self.out_stream and self.out_stream.is_active():
+                    self.out_stream.stop_stream()
+                if self.in_stream:
+                    self.in_stream.close()
+                if self.out_stream:
+                    self.out_stream.close()
+                if self.p:
+                    self.p.terminate()
+            finally:
+                os.dup2(old_stderr, 2)
+                os.close(devnull)
+                os.close(old_stderr)
         except Exception:
             pass
+
+        if self.reminder_scheduler:
+            try:
+                self.reminder_scheduler.stop()
+            except Exception:
+                pass
+
+        if self.overlay_server:
+            try:
+                await self.overlay_server.stop()
+            except Exception:
+                pass
+
+        if self.mcp_manager:
+            try:
+                await self.mcp_manager.shutdown_all()
+            except Exception:
+                pass
 
     def run(self):
         try:

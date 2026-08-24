@@ -2,13 +2,17 @@ import asyncio
 import struct
 import sys
 from src.voice.constants import AUDIO_IN_RATE, CHUNK_SIZE
-from src.events.base import ConversationContext, VoiceListeningStarted, VoiceListeningStopped, SpeechRecognized
+from src.events.base import ConversationContext, VoiceListeningStarted, VoiceListeningStopped, SpeechRecognized, ModelThinkingStarted
 from src.events.bus import EventBus
 from src.voice.player import play_sound
+from src.voice.vad import VoiceActivityDetector
+from src.utils.logging import get_logger
+
+logger = get_logger("voice.recorder")
 
 
 class AudioRecorder:
-    """Maneja la captura de micrófono y la detección de actividad de voz (VAD)."""
+    """Maneja la captura de micrófono y la detección inteligente de actividad de voz (VAD)."""
 
     def __init__(self, in_stream, event_bus: EventBus, conversation_context: ConversationContext):
         self.in_stream = in_stream
@@ -18,6 +22,7 @@ class AudioRecorder:
         self.silence_threshold: int | None = None
         self.is_paused = False
         self.processing_tool = False
+        self.vad = VoiceActivityDetector(sample_rate=AUDIO_IN_RATE)
 
         # Modelo Wake Word
         self.oww_model = None
@@ -36,7 +41,7 @@ class AudioRecorder:
                 model_paths = [p for p in openwakeword.get_pretrained_model_paths() if 'hey_jarvis' in p]
                 self.oww_model = Model(wakeword_model_paths=model_paths)
         except ImportError:
-            print("❌ ERROR: openwakeword o numpy no están instalados.")
+            logger.error("openwakeword o numpy no están instalados.")
             sys.exit(1)
 
     async def calibrate(self, duration: float = 0.5) -> int:
@@ -56,10 +61,11 @@ class AudioRecorder:
         avg_rms = sum(samples) / len(samples)
         threshold = max(800, int(avg_rms * 2.5))
         self.silence_threshold = threshold
+        logger.info(f"Micrófono calibrado. Umbral RMS base: {threshold}")
         return threshold
 
     async def listen(self, audio_queue_input: asyncio.Queue, audio_queue_output: asyncio.Queue, player=None):
-        """Bucle principal de escucha con VAD, wake word y detección de interrupciones (barge-in)."""
+        """Bucle principal de escucha con VAD inteligente, wake word y detección de interrupciones (barge-in)."""
         silence_frames = 0
         frames_per_second = AUDIO_IN_RATE / CHUNK_SIZE
         max_silence_seconds = 1.0
@@ -86,15 +92,13 @@ class AudioRecorder:
                     continue
 
                 if not self.processing_tool:
-                    shorts = struct.unpack('h' * (len(data) // 2), data)
-                    rms = sum(abs(s) for s in shorts) / len(shorts) if shorts else 0
-
+                    is_voice = self.vad.is_speech(data, current_threshold=self.silence_threshold)
                     is_speaking = player.is_speaking if player else False
 
                     if is_speaking:
-                        barge_in_threshold = self.silence_threshold or 12000
-                        if rms > barge_in_threshold:
-                            print("\n[🎙️ Interrupción de voz detectada]", flush=True)
+                        # Barge-in: si el usuario habla mientras Atlas habla, interrumpir
+                        if is_voice:
+                            logger.info("🎙️ Interrupción de voz detectada (Barge-in)")
                             if player:
                                 player.is_speaking = False
 
@@ -110,8 +114,7 @@ class AudioRecorder:
                     else:
                         await audio_queue_input.put(data)
 
-                        current_threshold = self.silence_threshold or 12000
-                        if rms < current_threshold:
+                        if not is_voice:
                             if user_spoke:
                                 silence_frames += 1
                         else:
@@ -124,6 +127,7 @@ class AudioRecorder:
                             await audio_queue_input.put("END_OF_TURN")
                             self.event_bus.publish(VoiceListeningStopped(self.conversation_context))
                             self.event_bus.publish(SpeechRecognized(self.conversation_context, text="[Audio enviado]"))
+                            self.event_bus.publish(ModelThinkingStarted(self.conversation_context))
                             play_sound("processing")
                             silence_frames = 0
                             user_spoke = False
@@ -135,5 +139,5 @@ class AudioRecorder:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                print(f"Error micro: {e}")
+                logger.error(f"Error en bucle de audio: {e}")
                 break

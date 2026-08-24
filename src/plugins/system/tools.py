@@ -5,6 +5,10 @@ import shutil
 from typing import Dict, Any
 
 from src.tools.base import BaseTool, ToolContext, ToolResult
+from src.utils.logging import get_logger
+
+logger = get_logger("plugins.system")
+
 
 def detect_user_location() -> str | None:
     _TZ_TO_COUNTRY = {
@@ -42,6 +46,7 @@ def detect_user_location() -> str | None:
             return country
     return tz
 
+
 class EstadoSistemaTool(BaseTool):
     @property
     def name(self) -> str:
@@ -63,6 +68,7 @@ class EstadoSistemaTool(BaseTool):
             "ubicacion": detect_user_location() or "desconocida"
         }
         return ToolResult(success=True, content=str(data), metadata=data)
+
 
 class ImprimirConsolaTool(BaseTool):
     @property
@@ -86,8 +92,10 @@ class ImprimirConsolaTool(BaseTool):
     async def execute(self, context: ToolContext, texto: str = None) -> ToolResult:
         if not texto:
             return ToolResult(success=False, content="Falta el texto a imprimir.")
-        print(f"\n[ATLAS DICE]:\n{texto}\n")
+        clean_text = texto.replace("\\n", "\n").replace("\\r", "").strip()
+        print(f"\n┌── 📄 [Texto en pantalla] ──────────────────────────┐\n{clean_text}\n└───────────────────────────────────────────────────┘\n")
         return ToolResult(success=True, content="Texto impreso en la consola correctamente.")
+
 
 class AbrirAplicacionTool(BaseTool):
     @property
@@ -112,7 +120,6 @@ class AbrirAplicacionTool(BaseTool):
         if not nombre:
             return ToolResult(success=False, content="Falta el nombre.")
             
-        print(f"\n🚀 [ATLAS ABRIENDO APLICACIÓN]: {nombre}")
         nombre_lower = nombre.lower().strip()
         
         mapeos = {
@@ -134,16 +141,17 @@ class AbrirAplicacionTool(BaseTool):
         
         cmd = mapeos.get(nombre_lower)
         if not cmd:
-            print(f"  ❌ No se encontró la aplicación '{nombre}' en la lista de permitidas.")
+            logger.warning(f"Aplicación '{nombre}' no encontrada en la lista de permitidas.")
             return ToolResult(success=False, content=f"No conozco la aplicación '{nombre}'. Pide confirmación y usa ejecutar_comando si es necesario.")
                 
         try:
             subprocess.Popen(cmd, shell=True, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            print(f"  ✅ Aplicación '{nombre}' lanzada correctamente.")
+            logger.info(f"Aplicación '{nombre}' lanzada correctamente.")
             return ToolResult(success=True, content=f"He abierto {nombre} en tu sistema.")
         except Exception as e:
-            print(f"  ❌ Error al abrir {nombre}: {e}")
+            logger.error(f"Error al abrir {nombre}: {e}")
             return ToolResult(success=False, content=f"Falló al intentar abrir {nombre}: {e}")
+
 
 class EnfocarAplicacionTool(BaseTool):
     @property
@@ -172,20 +180,11 @@ class EnfocarAplicacionTool(BaseTool):
         import subprocess
         
         try:
-            # Simulamos el comportamiento del usuario en GNOME Shell:
-            # Presionar tecla Super (Windows), escribir el nombre de la app, presionar Enter.
-            # Esto busca la ventana abierta de la app y la trae al frente, o la abre si no estaba abierta.
-            
-            # 1. Presionar Super (KEY_LEFTMETA = 125)
-            subprocess.run(["ydotool", "key", "125:1", "125:0"])
+            subprocess.run(["ydotool", "key", "125:1", "125:0"], capture_output=True)
             time.sleep(0.4)
-            
-            # 2. Escribir el nombre
-            subprocess.run(["ydotool", "type", nombre])
+            subprocess.run(["ydotool", "type", nombre], capture_output=True)
             time.sleep(0.4)
-            
-            # 3. Enter (KEY_ENTER = 28)
-            subprocess.run(["ydotool", "key", "28:1", "28:0"])
+            subprocess.run(["ydotool", "key", "28:1", "28:0"], capture_output=True)
             
             return ToolResult(success=True, content=f"He buscado y enfocado la aplicación '{nombre}' en la pantalla.")
         except Exception as e:

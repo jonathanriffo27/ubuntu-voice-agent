@@ -5,6 +5,7 @@ import subprocess
 def play_sound(sound_type: str):
     """Reproduce sonidos del sistema via PipeWire."""
     sounds = {
+        "ready": "/usr/share/sounds/freedesktop/stereo/service-login.oga",
         "pause": "/usr/share/sounds/freedesktop/stereo/device-removed.oga",
         "resume": "/usr/share/sounds/freedesktop/stereo/device-added.oga",
         "processing": "/usr/share/sounds/freedesktop/stereo/audio-volume-change.oga"

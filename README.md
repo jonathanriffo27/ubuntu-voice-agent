@@ -1,138 +1,195 @@
 <div align="center">
-  <img src="https://via.placeholder.com/150/000000/FFFFFF/?text=A" alt="Atlas Logo" width="100"/>
-  <h1>Atlas</h1>
-  <p><b>AI Runtime for Desktop Assistants</b></p>
+  <h1>⚡ Atlas AI Runtime</h1>
+  <p><b>Auto-Evolving Multi-Agent Voice & Desktop AI Platform</b></p>
   <p>
-    <i>Atlas no es solo un asistente de voz. Es un runtime modular impulsado por eventos diseñado para construir agentes multimodales autónomos en tu escritorio.</i>
+    <i>Atlas es un runtime modular impulsado por eventos que combina interacción por voz en tiempo real (<250ms), subagentes de desarrollo en segundo plano con razonamiento profundo (Gemini 3.7 Flash), compuerta de aprobación humana (HITL), búsqueda multi-motor inteligente (Google Grounding → Tavily → DuckDuckGo), Deep Research y recarga de herramientas en caliente.</i>
   </p>
 </div>
 
 ---
 
 <div align="center">
-  <b>🎙 Voice</b> • <b>🧠 Knowledge</b> • <b>🖥 Desktop</b> • <b>👁 Vision</b> • <b>🔌 Plugins</b> • <b>⚡ Event Driven</b>
+  <b>🎙 Gemini 3.1 Live</b> • <b>🧠 Gemini 3.7 Flash</b> • <b>🛡️ HITL Approval</b> • <b>🔍 Smart Multi-Search & Deep Research</b> • <b>🔄 Hot-Reload</b> • <b>🎵 Spotify MPRIS</b> • <b>🔌 MCP & Plugins</b> • <b>📊 Web HUD (:7890)</b> • <b>⌨️ Terminal Prompts & Shortcuts</b>
 </div>
 
 ---
 
-## 🌟 What is Atlas?
+## 🌟 Arquitectura General del Sistema
 
-Atlas es un marco de ejecución (runtime) diseñado para cerrar la brecha entre los LLMs y tu sistema operativo. A diferencia de un simple script que consume una API, Atlas proporciona una arquitectura completa basada en eventos, permitiendo que tu asistente escuche, observe, recuerde y ejecute acciones de forma autónoma (o supervisada) en tu entorno de trabajo.
-
-### ¿Qué problema resuelve?
-Los asistentes actuales suelen estar limitados al navegador o acoplados fuertemente a un único proveedor de IA. Atlas extrae la lógica central (el "cerebro") y desacopla todas las demás partes:
-- **Cambia de proveedor** (Gemini, OpenAI, Claude) con solo tocar la configuración.
-- **Añade nuevas habilidades** instantáneamente gracias al sistema dinámico de plugins.
-- **Mantén el contexto a largo plazo** con una base de conocimiento nativa, que no depende del historial temporal del LLM.
-
----
-
-## 🏗 Arquitectura
-
-Atlas está construido bajo principios estrictos de **Clean Architecture**:
+Atlas está construido bajo principios estrictos de **Clean Architecture** y comunicación desacoplada por **EventBus**:
 
 ```mermaid
 graph TD
-    UI[CLI / GUI UI] -. Subscribes to .-> EventBus((Event Bus))
-    Brain[Brain Assistant] <--> EventBus
+    User([👤 Usuario]) <-->|Audio PCM 16/24kHz| AtlasLive[🎙️ Atlas Frontend: Gemini 3.1 Flash Live]
+    User <-->|HTTP / WebSocket / HITL Buttons| WebHUD[📊 Dashboard Web HUD :7890]
+    User <-->|Teclado: Prompts + Flechas + Hotkeys| Terminal[⌨️ TerminalInteractionManager]
     
-    Brain --> Provider[LLM Provider Interface]
-    Provider -. Implements .-> Gemini[Gemini Live API]
+    AtlasLive <--> EventBus((⚡ Event Bus))
+    WebHUD <--> EventBus
+    Terminal <--> EventBus
     
-    Brain --> Registry[Plugin Registry]
+    AtlasLive --> Registry[🔧 Tool Registry]
     Registry --> Plugins[Dynamic Plugins]
+    Registry --> MCP[🔌 MCP Server Manager]
     
-    Plugins --> Shell[💻 Shell Plugin]
-    Plugins --> Browser[🌐 Browser Plugin]
-    Plugins --> System[⚙️ System Plugin]
-    Plugins --> KnowledgePlug[🧠 Knowledge Plugin]
-    Plugins --> OfficePlug[📄 Office Plugin]
-    Plugins --> VisionPlug[👁 Vision Plugin]
+    subgraph "Plugins del Sistema"
+        Plugins --> Media[🎵 Spotify & MPRIS Plugin]
+        Plugins --> Reminders[⏰ Async Reminders & Cron]
+        Plugins --> Browser[🌐 Smart Search: Google → Tavily → DDG + Deep Research]
+        Plugins --> System[⚙️ Desktop & Apps Launcher]
+        Plugins --> Knowledge[🧠 Semantic Vector Memory]
+        Plugins --> Office[📄 OnlyOffice & Document Automation]
+        Plugins --> DevVoice[🚀 Developer Voice Tools]
+    end
     
-    KnowledgePlug --> KnowledgeManager[Knowledge Base]
-    KnowledgeManager --> JSON[JSON Backend]
+    subgraph "Auto-Evolución & Subagente de Código"
+        DevVoice --> DevAgent[🧠 Subagente Desarrollador: Gemini 3.7 Flash High]
+        DevAgent <-->|OpenAI REST /v1| CLIProxy[🌐 CLIProxyAPI :8317]
+        CLIProxy <-->|Túnel SSH autossh| OracleVM[☁️ Servidor Oracle Cloud]
+        DevAgent --> HITL[🛡️ ApprovalManager: Compuerta HITL]
+        HITL -.->|Confirmación por Voz / HUD / Terminal| User
+        DevAgent --> HotReload[🔄 Hot-Reload Plugin Loader]
+        HotReload --> Registry
+    end
 ```
-
-- **🧠 Brain**: Coordina el micrófono, la voz, la VAD (Voice Activity Detection) y el bucle de eventos.
-- **⚡ Event Bus**: Toda la comunicación es mediante eventos fuertemente tipados (`ToolStarted`, `SpeechRecognized`, `KnowledgeUpdated`). Esto permite escalar a GUIs o sistemas de telemetría sin tocar el núcleo.
-- **🔌 Plugins**: Todas las herramientas (Shell, Browser, System, Memoria) se cargan dinámicamente y se aíslan.
-- **📚 Knowledge Base**: Un subsistema de memoria persistente con control de versión.
 
 ---
 
-## 🚀 Getting Started
+## ✨ Características Principales
 
-### 1. Requisitos
-- Python 3.10+
-- Bibliotecas del sistema (para PyAudio y dependencias de voz):
-  ```bash
-  sudo apt-get install portaudio19-dev python3-pyaudio
-  ```
+### 1. 🎙️ Frontend de Voz de Ultra Baja Latencia
+- **Modelo**: `gemini-3.1-flash-live-preview` vía **Google GenAI Multimodal Live API** (WebSocket bidireccional dúplex).
+- **Voz nativa**: Síntesis y reconocimiento End-to-End sin pipelines STT/TTS lentos.
+- **Detección VAD Multi-Feature**: Filtra ruidos mecánicos y respiración mediante análisis adaptativo de energía RMS, ZCR (Zero-Crossing Rate) y Crest Factor.
+- **Silenciamiento ALSA/PortAudio**: Supresión de errores de bajo nivel en Linux mediante bindings `ctypes`.
+- **Reconexión Resiliente**: Manejo silencioso y reconexión automática en desconexiones transitorias de WebSocket.
 
-### 2. Instalación
+### 2. ⌨️ Interacción por Terminal Avanzada (`TerminalInteractionManager`)
+- **Escritura Libre de Prompts**: Escribe párrafos de texto con auto-wrap nativo sin duplicación.
+- **Edición en Línea y Navegación**: Flechas (`←` / `→`), `Inicio` (Home), `Fin` (End), `Supr` (Delete), `Backspace`.
+- **Historial de Prompts**: Flechas (`↑` / `↓`) para navegar comandos y prompts anteriores.
+- **Atajos Directos de Mute**:
+  - `Tab`: 1 sola tecla para silenciar/reanudar micrófono al instante.
+  - `Shift + Espacio`: Protocolo extendido `modifyOtherKeys`.
+  - `Ctrl + Espacio`: Compatibilidad universal Linux VT100/ANSI.
+  - `F2`: Tecla de función superior.
+- **Ajuste de Sensibilidad VAD**: `Ctrl + Arriba` / `Ctrl + Abajo` (+500 / -500).
+- **Aprobación de 1 Tecla**: Presiona `[Enter]` en una línea vacía para aprobar solicitudes HITL pendientes, o escribe `n`/`no` para rechazar.
+- **Comandos Slash Rápidos**: `/mute`, `/help`, `/clear`.
+
+### 3. 🔍 Búsqueda Multi-Motor Inteligente & Deep Research
+- **Jerarquía con Fallback Automático**:
+  1. **Google Search Grounding** (Motor Primario, 2.5s timeout).
+  2. **Tavily Search API** (Segundo Fallback).
+  3. **DuckDuckGo Search** (Tercer Fallback Gratuito y Libre de API keys).
+- **Trazabilidad Visual**: Insignias dinámicas en consola (`[GOOGLE ✅]`, `[GOOGLE ❌ → TAVILY ✅]`, etc.).
+- **Lector de Páginas Web**: Extracción limpia de artículos y contenido web.
+- **Motor Deep Research (4 Fases)**:
+  1. *Planificación*: Gemini 3.7 genera 3 subconsultas complementarias.
+  2. *Búsqueda Concurrente*: Consulta multi-fuente en paralelo.
+  3. *Lectura Profunda*: Descarga y analiza las páginas más relevantes.
+  4. *Síntesis con Razonamiento*: Gemini 3.7 Flash redacta reporte estructurado y resumen para voz.
+
+### 4. 🧠 Subagente de Desarrollo Auto-Evolutivo (Gemini 3.7 Flash)
+- **Modelo**: `gemini-3.7-flash-high` con **Thinking/Reasoning tokens**.
+- **Conexión**: Consume `CLIProxyAPI` en `http://127.0.0.1:8317/v1` mediante túnel persistente `autossh` a Oracle Cloud.
+- **Capacidades**: Puede explorar el proyecto, escribir nuevos plugins en `src/plugins/`, correr la suite de `pytest` y recargar las herramientas en caliente sin reiniciar Atlas.
+
+### 5. 🛡️ Compuerta de Aprobación Humana (HITL - Human-In-The-Loop)
+- Ninguna acción crítica (creación de archivos, comandos bash) se ejecuta sin tu autorización.
+- **Sincronización multi-canal**:
+  - **Voz**: Atlas pregunta *"El agente solicita permiso para crear X. ¿Lo apruebas?"* y reconoce *"Apruebo"*, *"Confirmar"*, *"Rechaza el cambio"*.
+  - **Web HUD**: Banner interactivo con vista previa del código y botones `[✅ Aprobar]` / `[❌ Rechazar]`.
+  - **Terminal**: Aprobación directa con `[Enter]` en línea vacía.
+
+### 6. 🔄 Recarga en Caliente (*Hot-Reloading*)
+- Las nuevas herramientas creadas por el subagente se inyectan en el `ToolRegistry` activo en memoria instantáneamente sin reiniciar el proceso.
+
+### 7. 🎵 Control Multimedia y Spotify Nativo (MPRIS D-Bus)
+- Reproducción directa con búsqueda inteligente (`reproducir_musica(busqueda="Queen")`).
+- Control de reproducción: Play, Pausa, Siguiente, Anterior y consulta de qué canción está sonando (`que_suena`).
+
+### 8. ⏰ Motor de Recordatorios Asíncrono
+- Recordatorios en lenguaje natural persistentes en JSON (`crear_recordatorio`, `listar_recordatorios`, `cancelar_recordatorio`).
+- Notificaciones de escritorio nativas en Ubuntu vía `notify-send` y alertas de sonido vía PipeWire.
+
+### 9. 🔌 Soporte para Servidores MCP (Model Context Protocol)
+- Conexión dinámica a servidores MCP externos (filesystem, SQLite, GitHub, etc.) sobre `stdio` mediante JSON-RPC 2.0.
+
+### 10. 📊 Dashboard Web HUD en Tiempo Real (`http://localhost:7890`)
+- Visualizador de ondas de audio, chat bidireccional texto/voz, botón de mute/pausa, visualizador de recordatorios y modal HITL de aprobaciones.
+
+---
+
+## 🛠️ Estructura del Código
+
+```text
+├── jarvis.py                   # Punto de entrada y orquestador del runtime
+├── config.yaml                 # Configuración centralizada de modelos, UI y MCP
+├── requirements.txt            # Dependencias del proyecto
+├── src/
+│   ├── brain/                  # Orquestador del asistente y bucle de audio
+│   ├── providers/              # Abstracción agnóstica de proveedores (Gemini Live)
+│   ├── agents/                 # Subagente desarrollador ReAct y cliente CLIProxyAPI
+│   ├── security/               # Compuerta HITL (ApprovalManager)
+│   ├── events/                 # EventBus y catálogo de eventos de dominio
+│   ├── tools/                  # Contrato BaseTool y ToolRegistry con Hot-Reload
+│   ├── plugins/                # Plugins modulares
+│   │   ├── browser/            # Smart Search multi-motor, Reader y Deep Research
+│   │   ├── developer/          # Herramientas de voz para delegar tareas y aprobar
+│   │   ├── media/              # Control nativo de Spotify vía D-Bus MPRIS
+│   │   ├── office/             # Automatización de documentos OnlyOffice
+│   │   ├── reminders/          # Herramientas de recordatorios y alarmas
+│   │   ├── system/             # Control de aplicaciones de escritorio y sistema
+│   │   ├── knowledge/          # Memoria persistente y notas
+│   │   └── vision/             # Captura y análisis de pantalla
+│   ├── knowledge/              # Base de conocimiento y búsqueda semántica vectorial
+│   ├── reminders/              # Planificador asíncrono y notificaciones SO
+│   ├── mcp/                    # Cliente y gestor de servidores Model Context Protocol
+│   ├── ui/                     # CLI interactiva, TerminalInput y servidor Web HUD
+│   ├── utils/                  # Logging estructurado y rotativo
+│   └── voice/                  # Captura de audio, VAD inteligente y reproductor PipeWire
+├── tests/                      # Suite de 56 pruebas automatizadas con pytest (100% passing)
+└── debug/                      # Scripts auxiliares de diagnóstico y testing
+```
+
+---
+
+## 🚀 Puesta en Marcha
+
+### 1. Variables de Entorno
 ```bash
-git clone https://github.com/tu-usuario/atlas.git
-cd atlas
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+export GEMINI_API_KEY="tu_clave_de_gemini_aistudio"
+export TAVILY_API_KEY="tu_clave_de_tavily"  # Opcional (DuckDuckGo funciona como fallback gratuito)
 ```
 
-### 3. Configuración
-Crea un archivo `config.yaml` o edita el existente para configurar tus proveedores. Atlas descubrirá automáticamente los plugins.
-```yaml
-provider:
-  type: gemini
-  model: models/gemini-2.0-flash-exp
-```
-
+### 2. Iniciar el Túnel hacia CLIProxyAPI (Oracle Server)
 ```bash
-export GEMINI_API_KEY="tu_clave_aqui"
-export TAVILY_API_KEY="tu_clave_aqui" # Para búsqueda web
+# Iniciar el servicio persistente de autossh (puerto local 8317)
+systemctl --user start cliproxy-tunnel
 ```
 
-### 4. Ejecución
+### 3. Ejecutar la Suite de Pruebas
 ```bash
-python3 jarvis.py
+./venv/bin/pytest tests/ -v
+```
+
+### 4. Iniciar Atlas
+```bash
+./venv/bin/python3 jarvis.py
 ```
 
 ---
 
-## 📐 Decisiones de Arquitectura
+## 🎙️ Ejemplos de Comandos y Atajos
 
-Atlas está construido pensando en el largo plazo. Aquí explicamos el *porqué* detrás de las decisiones más importantes:
-
-- **¿Por qué un Event Bus?**
-  Los asistentes tradicionales acoplan la interfaz (como la terminal o la voz) a la lógica central, llenando el código de `print()` o callbacks. Al usar un Event Bus, el cerebro solo *emite* eventos (`SpeechRecognized`, `ToolStarted`). Cualquier interfaz (como nuestra CLI en `rich` o una futura GUI) solo debe suscribirse a los eventos. Cero acoplamiento.
-
-- **¿Por qué Providers abstractos?**
-  Las APIs de OpenAI, Gemini y Claude cambian constantemente. En Atlas, el núcleo solo interactúa con un `BaseProvider`. Si el día de mañana sale un modelo mejor, solo creas un nuevo provider; las herramientas y la lógica de negocio permanecen intactas.
-
-- **¿Por qué un sistema de Plugins?**
-  Permite aislar dependencias. El plugin de Visión necesita `mss` y `Pillow`; el de Shell necesita acceso a subprocesos. Si alguien no necesita visión, simplemente borra el plugin y el sistema sigue funcionando. Además, facilita que la comunidad extienda Atlas sin tocar el núcleo.
-
-- **¿Por qué separar la Knowledge Base?**
-  Los LLMs tienen memoria a corto plazo limitada por su ventana de contexto. Atlas tiene un subsistema de memoria (`KnowledgeManager`) agnóstico del proveedor. Esto permite a Atlas construir un perfil del usuario y recordar notas a través de meses de uso, persistiendo en JSON (y fácilmente migrable a SQLite).
-
-- **¿Por qué ToolContext y ToolResult?**
-  Estandarizar las entradas y salidas de las herramientas garantiza que cualquier plugin devuelva un contrato predecible. El `ToolContext` permite inyectar dependencias globales (como el Event Bus o el Config) hacia las herramientas sin usar variables globales.
-
----
-
-## 🗺 Roadmap
-
-- [x] **Provider Abstraction**: Soporte para múltiples backends de LLM.
-- [x] **Plugin Registry**: Abstracción de herramientas.
-- [x] **Knowledge Base**: Subsistema de memoria persistente.
-- [x] **Event-Driven UI**: CLI reactiva conectada al bus de eventos.
-- [x] **Vision Plugin**: Análisis de pantalla en tiempo real y OCR.
-- [x] **Office Plugin**: Generación automatizada de documentos.
-- [ ] **MCP (Model Context Protocol)**: Soporte nativo para herramientas externas estandarizadas.
-- [ ] **Observability**: Exportación de métricas a Prometheus/Grafana.
-- [ ] **GUI**: Interfaz gráfica minimalista construida sobre el Event Bus.
-
----
-
-## 🤝 Contributing
-
-¡Las PRs son bienvenidas! Para añadir un nuevo plugin, simplemente crea una carpeta en `src/plugins/tu_plugin/`, define tus clases heredando de `BaseTool` y exporta la función `setup(registry, dependencies)`. Atlas se encargará del resto.
+| Lo que haces / dices | Acción ejecutada por Atlas |
+| :--- | :--- |
+| **Presionar `Tab` o `Shift+Espacio`** | Silencia / Reanuda el micrófono al instante con feedback auditivo. |
+| **Escribir prompt + `[Enter]`** | Envía una instrucción de texto directamente a Atlas desde la terminal. |
+| **Presionar `[Enter]` en autorización** | Aprueba inmediatamente una solicitud HITL pendiente del subagente. |
+| *"Hey Atlas, pon música de Coldplay en Spotify"* | Busca y reproduce inmediatamente en Spotify vía D-Bus. |
+| *"¿Qué canción está sonando?"* | Consulta la metadata de Spotify y te dice título, artista y álbum. |
+| *"Investiga en profundidad sobre la arquitectura MoE"* | Ejecuta Deep Research (4 pasos) con síntesis estructurada. |
+| *"Recuérdame revisar el correo en 15 minutos"* | Agenda un recordatorio con alerta de sonido y `notify-send`. |
+| *"Crea un plugin para consultar el clima en Santiago"* | Delega a **Gemini 3.7 Flash** en segundo plano, solicita aprobación HITL, corre pruebas y lo recarga en caliente sin reiniciar. |

@@ -95,7 +95,7 @@ class CrearDocumentoOfficeTool(BaseTool):
                 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
                 prompt = f"El usuario necesita crear un documento con la siguiente instrucción o tema: {tema}. Redacta el contenido basándote estrictamente en lo que pide. Si pide un informe largo, hazlo detallado. Si pide algo breve, hazlo breve. Redáctalo en texto plano estructurado, separado por saltos de línea. NO uses formato markdown (sin asteriscos para negritas ni hashtags)."
                 respuesta_llm = await client.aio.models.generate_content(
-                    model="gemini-3.5-flash",
+                    model="gemini-2.5-flash",
                     contents=prompt
                 )
                 contenido = respuesta_llm.text.replace("\\n", "\n").replace("\\r", "")
@@ -334,7 +334,7 @@ class EditarDocumentoInteligenteTool(BaseTool):
                 prompt = f"Documento actual:\n\n{texto_original}\n\nInstrucción: {instruccion}\n\nIdentifica EXACTAMENTE el fragmento literal antiguo que se debe buscar en el documento y redacta el nuevo texto que lo va a reemplazar basándote en la instrucción.\n\nADVERTENCIA CRÍTICA: 'buscar' y 'reemplazar_con' deben ser ÚNICAMENTE la frase o el párrafo específico que cambia, NUNCA el documento entero. Devuelve ÚNICAMENTE un JSON válido con dos claves: 'buscar' y 'reemplazar_con'."
                 
                 res = await client.aio.models.generate_content(
-                    model="gemini-3.5-flash",
+                    model="gemini-2.5-flash",
                     contents=prompt
                 )
                 

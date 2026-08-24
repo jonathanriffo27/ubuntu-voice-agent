@@ -16,6 +16,9 @@ class Event:
     def __post_init__(self):
         self.timestamp = datetime.now()
 
+# Alias para compatibilidad
+BaseEvent = Event
+
 # Domain Events
 @dataclass 
 class SessionStarted(Event): 
@@ -32,7 +35,11 @@ class VoiceListeningStarted(Event):
 @dataclass 
 class VoiceListeningStopped(Event): 
     pass
-    
+
+# Aliases de escucha
+ListeningStarted = VoiceListeningStarted
+ListeningStopped = VoiceListeningStopped
+
 @dataclass 
 class SpeechRecognized(Event):
     text: str
@@ -49,6 +56,9 @@ class ModelThinkingFinished(Event):
 class ToolStarted(Event):
     tool_name: str
     arguments: Dict[str, Any]
+
+# Alias
+ToolExecuting = ToolStarted
 
 @dataclass 
 class ToolSucceeded(Event):
@@ -68,6 +78,67 @@ class KnowledgeUpdated(Event):
 @dataclass 
 class ResponseGenerated(Event):
     text: str
+
+# Alias
+AssistantTextChunk = ResponseGenerated
+
+@dataclass
+class UserInterrupted(Event):
+    pass
+
+@dataclass
+class AudioStreamStarted(Event):
+    pass
+
+@dataclass
+class AudioStreamChunk(Event):
+    data: bytes
+
+@dataclass
+class AudioStreamEnded(Event):
+    pass
+
+@dataclass 
+class ReminderCreated(Event):
+    reminder_id: str
+    message: str
+    trigger_at: str
+
+@dataclass 
+class ReminderTriggered(Event):
+    reminder_id: str
+    message: str
+
+@dataclass
+class TaskDelegated(Event):
+    task_id: str
+    instruction: str
+    model: str = "gemini-3.7-flash-high"
+
+@dataclass
+class ApprovalRequested(Event):
+    request_id: str
+    action_type: str
+    description: str
+    payload: str
+    timeout_seconds: float = 60.0
+
+@dataclass
+class ApprovalResolved(Event):
+    request_id: str
+    approved: bool
+    resolver: str = "user"  # 'voice', 'hud', 'terminal', 'timeout'
+
+@dataclass
+class TaskCompleted(Event):
+    task_id: str
+    success: bool
+    result: str
+
+@dataclass
+class PluginsReloaded(Event):
+    plugins_count: int
+    tools_count: int
 
 @dataclass 
 class ErrorOccurred(Event):

@@ -1,5 +1,10 @@
 import os
 import sys
+from src.voice.alsa_mute import mute_alsa_logging
+
+# Silenciar errores y advertencias de bajo nivel C de ALSA (underruns)
+mute_alsa_logging()
+
 from src.utils.logging import setup_logging, get_logger
 from src.providers.gemini import GeminiProvider
 from src.brain.assistant import Assistant
@@ -9,9 +14,16 @@ from src.knowledge.backends.json import JsonKnowledgeBackend
 from src.config.loader import load_config
 from src.events.bus import EventBus
 from src.ui.cli import CLIInterface
-from src.plugins.loader import discover_and_register_plugins
+from src.ui.web_overlay import WebOverlayServer
+from src.plugins.loader import discover_and_register_plugins, reload_plugins
+from src.mcp.manager import MCPServerManager
+from src.reminders.scheduler import AsyncReminderScheduler
+from src.security.approval import ApprovalManager
+from src.agents.client import CLIProxyClient
+from src.agents.tools import AgentCodeTools
+from src.agents.developer_agent import DeveloperAgent
 
-# Inicializar logging estructurado
+# Inicializar logging estructurado (consola limpia, log completo a disco)
 setup_logging(log_file="latest_session.log")
 logger = get_logger("bootstrap")
 
@@ -23,9 +35,24 @@ if not API_KEY:
 if __name__ == "__main__":
     config = load_config("config.yaml")
 
-    # Inicializar el Event Bus y la UI
+    # Inicializar el Event Bus y la UI de consola
     event_bus = EventBus()
     ui = CLIInterface(event_bus)
+
+    # Inicializar la compuerta de aprobación humana (HITL)
+    approval_manager = ApprovalManager(event_bus=event_bus)
+
+    # Inicializar el servidor de HUD / Overlay Web con soporte HITL
+    overlay_server = None
+    if config.ui.overlay_enabled:
+        overlay_server = WebOverlayServer(
+            event_bus,
+            port=config.ui.overlay_port,
+            approval_manager=approval_manager
+        )
+
+    # Inicializar el motor de recordatorios
+    reminder_scheduler = AsyncReminderScheduler(event_bus=event_bus)
 
     # Inicializar el registro de herramientas
     registry = ToolRegistry()
@@ -34,13 +61,42 @@ if __name__ == "__main__":
     knowledge_backend = JsonKnowledgeBackend("atlas_knowledge.json")
     knowledge_manager = KnowledgeManager(backend=knowledge_backend)
 
-    # Cargar plugins dinámicamente
+    # Dependencias base para plugins
     dependencies = {
-        "knowledge_manager": knowledge_manager
+        "knowledge_manager": knowledge_manager,
+        "reminder_scheduler": reminder_scheduler,
+        "approval_manager": approval_manager
     }
+
+    # Inicializar el subagente desarrollador si está habilitado
+    developer_agent = None
+    if config.developer_agent.enabled:
+        cli_client = CLIProxyClient(
+            base_url=config.developer_agent.base_url,
+            api_key=config.developer_agent.api_key
+        )
+        reload_cb = lambda: reload_plugins(registry, dependencies)
+        agent_tools = AgentCodeTools(
+            approval_manager=approval_manager,
+            reload_callback=reload_cb
+        )
+        developer_agent = DeveloperAgent(
+            client=cli_client,
+            code_tools=agent_tools,
+            event_bus=event_bus,
+            model=config.developer_agent.model,
+            max_iterations=config.developer_agent.max_iterations
+        )
+        dependencies["developer_agent"] = developer_agent
+        dependencies["reload_callback"] = reload_cb
+
+    # Cargar plugins locales dinámicamente
     discover_and_register_plugins(registry, dependencies)
 
-    # Inicializar el proveedor
+    # Gestor de servidores MCP (Model Context Protocol)
+    mcp_manager = MCPServerManager()
+
+    # Inicializar el proveedor LLM
     if config.provider.type == "gemini":
         provider = GeminiProvider(
             model_name=config.provider.model,
@@ -55,6 +111,10 @@ if __name__ == "__main__":
         registry=registry,
         config=config,
         knowledge_manager=knowledge_manager,
-        event_bus=event_bus
+        event_bus=event_bus,
+        mcp_manager=mcp_manager,
+        overlay_server=overlay_server,
+        reminder_scheduler=reminder_scheduler,
+        approval_manager=approval_manager
     )
     assistant.run()

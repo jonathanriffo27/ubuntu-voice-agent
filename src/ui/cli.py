@@ -1,71 +1,201 @@
 import sys
+from typing import Optional
 from src.events.base import (
-    Event, SessionStarted, SessionEnded, VoiceListeningStarted,
-    VoiceListeningStopped, SpeechRecognized, ModelThinkingStarted, 
-    ToolStarted, ToolSucceeded, ToolFailed, ResponseGenerated, 
-    ErrorOccurred, KnowledgeUpdated
+    BaseEvent,
+    SessionStarted,
+    SessionEnded,
+    AudioStreamStarted,
+    AudioStreamChunk,
+    AudioStreamEnded,
+    AssistantTextChunk,
+    UserInterrupted,
+    ListeningStarted,
+    ListeningStopped,
+    ModelThinkingStarted,
+    ModelThinkingFinished,
+    ToolExecuting,
+    ToolSucceeded,
+    ToolFailed,
+    TaskDelegated,
+    ApprovalRequested,
+    ApprovalResolved,
+    TaskCompleted,
+    PluginsReloaded,
+    ReminderCreated,
+    ReminderTriggered,
+    KnowledgeUpdated,
+    ErrorOccurred,
 )
-from src.events.bus import EventBus
 
-# Secuencias ANSI para colores
+# Códigos ANSI para diseño compacto y minimalista
 C_RESET = "\033[0m"
-C_BLUE = "\033[94m"
-C_CYAN = "\033[96m"
-C_GREEN = "\033[92m"
-C_YELLOW = "\033[93m"
-C_RED = "\033[91m"
-C_DIM = "\033[2m"
 C_BOLD = "\033[1m"
+C_DIM = "\033[2m"
+C_CYAN = "\033[36m"
+C_GREEN = "\033[32m"
+C_YELLOW = "\033[33m"
+C_PURPLE = "\033[35m"
+C_BLUE = "\033[34m"
+C_RED = "\033[31m"
+
 
 class CLIInterface:
     """
-    Una interfaz de terminal estilizada que escucha el Event Bus.
+    Renderizador de terminal compacto, limpio y estético para Atlas.
+    Agrupa logs por prefijos limpios y da salida en tiempo real al habla del asistente.
     """
-    def __init__(self, bus: EventBus):
-        self.bus = bus
-        self.bus.subscribe_all(self.handle_event)
-        self._print_header()
 
-    def _print_header(self):
-        print(f"\n{C_CYAN}┌────────────────────────────────────────────────────────┐{C_RESET}")
-        print(f"{C_CYAN}│ {C_BOLD}Atlas Runtime{C_RESET}{C_CYAN}                                          │{C_RESET}")
-        print(f"{C_CYAN}├────────────────────────────────────────────────────────┤{C_RESET}")
+    def __init__(self, event_bus=None):
+        self.event_bus = event_bus
+        self._in_text_stream = False
+        self._last_event_was_stream = False
+        if self.event_bus:
+            self.event_bus.subscribe_all(self.display_event)
 
-    def handle_event(self, event: Event):
+    def _flush_stream(self):
+        if self._in_text_stream:
+            print()
+            self._in_text_stream = False
+
+    def display_event(self, event: BaseEvent) -> None:
         if isinstance(event, SessionStarted):
-            print(f"{C_CYAN}│{C_RESET} 🚀 {C_DIM}Sistema iniciado. Di 'Hey Atlas' para hablar.{C_RESET}")
-            
-        elif isinstance(event, VoiceListeningStarted):
-            print(f"{C_CYAN}│{C_RESET} 🎤 {C_YELLOW}Escuchando...{C_RESET}")
-            
-        elif isinstance(event, SpeechRecognized):
-            text = event.text if event.text else "[Audio enviado]"
-            print(f"{C_CYAN}│{C_RESET} 👤 {C_BOLD}Usuario:{C_RESET} {text}")
-            
-        elif isinstance(event, ToolStarted):
-            print(f"{C_CYAN}│{C_RESET} 🔧 {C_BLUE}Usando herramienta:{C_RESET} {event.tool_name}")
-            # Mostrar args de forma resumida
-            args_str = str(event.arguments)
-            if len(args_str) > 60: args_str = args_str[:57] + "..."
-            print(f"{C_CYAN}│{C_RESET}    {C_DIM}args: {args_str}{C_RESET}")
-            
-        elif isinstance(event, ToolSucceeded):
-            res_str = str(event.result).replace('\n', ' ')
-            if len(res_str) > 60: res_str = res_str[:57] + "..."
-            print(f"{C_CYAN}│{C_RESET}    ✅ {C_GREEN}Completado:{C_RESET} {C_DIM}{res_str}{C_RESET}")
-            
-        elif isinstance(event, ToolFailed):
-            print(f"{C_CYAN}│{C_RESET}    ❌ {C_RED}Fallo:{C_RESET} {event.error}")
-            
-        elif isinstance(event, KnowledgeUpdated):
-            print(f"{C_CYAN}│{C_RESET} 💾 {C_YELLOW}Conocimiento:{C_RESET} {event.details}")
-            
-        elif isinstance(event, ResponseGenerated):
-            # Imprimir respuesta con formato
-            print(f"{C_CYAN}│{C_RESET} 🤖 {C_BOLD}Atlas:{C_RESET} {event.text}")
-            
-        elif isinstance(event, ErrorOccurred):
-            print(f"{C_CYAN}│{C_RESET} ⚠️  {C_RED}Error [{event.source}]: {event.error}{C_RESET}")
-            
+            self._flush_stream()
+            print(f"\n{C_CYAN}╔══════════════════════════════════════════════════════════════╗{C_RESET}")
+            print(f"{C_CYAN}║ {C_BOLD}⚡ ATLAS AI RUNTIME (Multi-Agent Auto-Evolution)             {C_RESET}{C_CYAN}║{C_RESET}")
+            print(f"{C_CYAN}╚══════════════════════════════════════════════════════════════╝{C_RESET}")
+            print(f"{C_CYAN}│{C_RESET} 🎙️  {C_BOLD}Voz:{C_RESET}        Live Preview ('Hey Atlas' o [Tab / Shift+Espacio] para Mute)")
+            print(f"{C_CYAN}│{C_RESET} 🤖  {C_BOLD}Subagente:{C_RESET}  Gemini 3.7 Flash High (CLIProxy Oracle)")
+            print(f"{C_CYAN}│{C_RESET} 🔍  {C_BOLD}Búsqueda:{C_RESET}   Google → Tavily → DuckDuckGo (Deep Research)")
+            print(f"{C_CYAN}│{C_RESET} 🌐  {C_BOLD}Web HUD:{C_RESET}    http://localhost:7890 (Dashboard interactivo)")
+            print(f"{C_CYAN}│{C_RESET} ⌨️  {C_BOLD}Terminal:{C_RESET}   Escribe prompts libremente o [Enter] para aprobar")
+            print(f"{C_CYAN}│{C_RESET} 🚀  {C_GREEN}Sistema listo y escuchando...{C_RESET}")
+            print(f"{C_CYAN}├──────────────────────────────────────────────────────────────{C_RESET}")
+
         elif isinstance(event, SessionEnded):
-            print(f"{C_CYAN}└────────────────────────────────────────────────────────┘{C_RESET}\n")
+            self._flush_stream()
+            print(f"\n{C_CYAN}└─────────────────────────── [Sesión Finalizada] ──────────────{C_RESET}\n")
+
+        elif isinstance(event, ListeningStarted):
+            self._flush_stream()
+            print(f"{C_CYAN}│{C_RESET} {C_GREEN}●{C_RESET} {C_DIM}Escuchando...{C_RESET}", end="\r", flush=True)
+
+        elif isinstance(event, ListeningStopped):
+            # Limpiar línea de escuchando
+            print("\r" + " " * 45 + "\r", end="", flush=True)
+
+        elif isinstance(event, ModelThinkingStarted):
+            self._flush_stream()
+            print(f"{C_CYAN}│{C_RESET} {C_YELLOW}⏳{C_RESET} {C_DIM}Procesando respuesta...{C_RESET}", end="\r", flush=True)
+
+        elif isinstance(event, ModelThinkingFinished):
+            print("\r" + " " * 45 + "\r", end="", flush=True)
+
+        elif isinstance(event, AssistantTextChunk):
+            if not self._in_text_stream:
+                print("\r" + " " * 45 + "\r", end="", flush=True)
+                print(f"{C_CYAN}│{C_RESET} {C_BOLD}Atlas:{C_RESET} ", end="", flush=True)
+                self._in_text_stream = True
+            print(event.text, end="", flush=True)
+
+        elif isinstance(event, UserInterrupted):
+            if self._in_text_stream:
+                print(f" {C_YELLOW}[interrumpido]{C_RESET}")
+                self._in_text_stream = False
+            else:
+                print(f"{C_CYAN}│{C_RESET} {C_YELLOW}⚡ Interrupción de usuario{C_RESET}")
+
+        elif isinstance(event, ToolExecuting):
+            self._flush_stream()
+            print("\r" + " " * 45 + "\r", end="", flush=True)
+            args_clean = ", ".join(f"{k}='{v}'" for k, v in event.arguments.items())
+            if len(args_clean) > 45:
+                args_clean = args_clean[:42] + "..."
+            print(f"{C_CYAN}│{C_RESET} ⚡ {C_BLUE}{event.tool_name}{C_RESET}{C_DIM}({args_clean}){C_RESET}")
+            print(f"{C_CYAN}│{C_RESET}   {C_YELLOW}⏳{C_RESET} {C_DIM}Ejecutando acción...{C_RESET}", end="\r", flush=True)
+
+        elif isinstance(event, ToolSucceeded):
+            self._flush_stream()
+            print("\r" + " " * 45 + "\r", end="", flush=True)
+            res = event.result
+            if isinstance(res, dict) and "result" in res:
+                res_str = str(res["result"]).replace('\n', ' ')
+            else:
+                res_str = str(res).replace('\n', ' ')
+            if len(res_str) > 100:
+                res_str = res_str[:97] + "..."
+            print(f"{C_CYAN}│{C_RESET}   {C_GREEN}└─ {res_str}{C_RESET}")
+
+        elif isinstance(event, ToolFailed):
+            self._flush_stream()
+            print("\r" + " " * 45 + "\r", end="", flush=True)
+            print(f"{C_CYAN}│{C_RESET}   {C_RED}└─ Error: {event.error}{C_RESET}")
+
+        elif isinstance(event, TaskDelegated):
+            self._flush_stream()
+            clean_inst = event.instruction.replace('\n', ' ').strip()
+            if len(clean_inst) > 65:
+                clean_inst = clean_inst[:62] + "..."
+            print(f"\n{C_PURPLE}┌── 🚀 [Subagente Gemini 3.7 Flash: {event.task_id}] ────────────────┐{C_RESET}")
+            print(f"{C_PURPLE}│{C_RESET} {C_BOLD}{clean_inst}{C_RESET}")
+            print(f"{C_PURPLE}└────────────────────────────────────────────────────────┘{C_RESET}")
+
+        elif isinstance(event, ApprovalRequested):
+            self._flush_stream()
+            clean_desc = event.description.replace('\n', ' ').strip()
+            if len(clean_desc) > 46:
+                clean_desc = clean_desc[:43] + "..."
+
+            # Formatear vista previa compacta del comando o código
+            payload_clean = event.payload.replace('\n', ' ').strip()
+            import re
+            payload_clean = re.sub(r'\s+', ' ', payload_clean)
+            if len(payload_clean) > 44:
+                payload_clean = payload_clean[:41] + "..."
+
+            label = "Comando:" if event.action_type == "shell_command" else "Archivo:"
+            print(f"\n{C_YELLOW}┌── ⚠️ [Autorización Requerida: {event.request_id}] ─────────────────────────┐{C_RESET}")
+            print(f"{C_YELLOW}│{C_RESET} {C_BOLD}Acción:{C_RESET}   {clean_desc}")
+            if payload_clean:
+                print(f"{C_YELLOW}│{C_RESET} {C_DIM}{label:<9} {payload_clean}{C_RESET}")
+            print(f"{C_YELLOW}│{C_RESET} {C_DIM}Confirmar: Presiona [Enter], di 'Apruebo' o usa el HUD (:7890) [{event.timeout_seconds:.0f}s]{C_RESET}")
+            print(f"{C_YELLOW}└────────────────────────────────────────────────────────┘{C_RESET}")
+
+        elif isinstance(event, ApprovalResolved):
+            self._flush_stream()
+            color = C_GREEN if event.approved else C_RED
+            estado = "APROBADA ✅" if event.approved else "RECHAZADA ❌"
+            print(f"{C_CYAN}│{C_RESET} 🛡️ {color}Acción [{event.request_id}] {estado} por {event.resolver}{C_RESET}")
+            if event.approved:
+                print(f"{C_CYAN}│{C_RESET} ⏳ {C_DIM}Subagente ejecutando en segundo plano con Gemini 3.7 Flash...{C_RESET}")
+
+        elif isinstance(event, TaskCompleted):
+            self._flush_stream()
+            color = C_GREEN if event.success else C_RED
+            clean_res = event.result.replace('\n', ' ').strip()
+            if len(clean_res) > 75:
+                clean_res = clean_res[:72] + "..."
+            print(f"\n{color}┌── 🏁 [Subagente Finalizado: {event.task_id}] ───────────────────────────┐{C_RESET}")
+            print(f"{color}│{C_RESET} {clean_res}")
+            print(f"{color}└────────────────────────────────────────────────────────┘{C_RESET}\n")
+
+        elif isinstance(event, PluginsReloaded):
+            self._flush_stream()
+            print(f"{C_CYAN}│{C_RESET} 🔄 {C_GREEN}Plugins recargados en caliente ({event.tools_count} herramientas en memoria){C_RESET}")
+
+        elif isinstance(event, ReminderCreated):
+            self._flush_stream()
+            print(f"{C_CYAN}│{C_RESET} ⏰ {C_PURPLE}Recordatorio guardado [{event.reminder_id}]:{C_RESET} {event.message} ({event.trigger_at})")
+
+        elif isinstance(event, ReminderTriggered):
+            self._flush_stream()
+            print(f"\n{C_YELLOW}╔════════════════ 🔔 RECORDATORIO DISPARADO ════════════════╗{C_RESET}")
+            print(f"{C_YELLOW}║ {C_BOLD}{event.message:<57} ║{C_RESET}")
+            print(f"{C_YELLOW}╚═══════════════════════════════════════════════════════════╝{C_RESET}\n")
+
+        elif isinstance(event, KnowledgeUpdated):
+            self._flush_stream()
+            print(f"{C_CYAN}│{C_RESET} 💾 {C_DIM}Memoria: {event.details}{C_RESET}")
+
+        elif isinstance(event, ErrorOccurred):
+            self._flush_stream()
+            print(f"{C_CYAN}│{C_RESET} ⚠️  {C_RED}[{event.source}] {event.error}{C_RESET}")

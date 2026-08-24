@@ -12,3 +12,24 @@ memory:
 
 vision:
   enabled: true
+
+ui:
+  overlay_enabled: true
+  overlay_port: 7890
+  auto_open_browser: false
+
+developer_agent:
+  enabled: true
+  provider: "cliproxy"
+  base_url: "http://127.0.0.1:8317/v1"
+  api_key: "YOUR_CLIPROXY_API_KEY"
+  model: "gemini-3.7-flash-high"
+  temperature: 0.2
+  max_iterations: 15
+
+# Servidores MCP (Model Context Protocol) externos
+mcp_servers: {}
+  # Ejemplo de servidor MCP filesystem:
+  # filesystem:
+  #   command: "npx"
+  #   args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/jonathan"]
