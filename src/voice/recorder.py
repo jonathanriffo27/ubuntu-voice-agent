@@ -98,8 +98,9 @@ class AudioRecorder:
     async def listen(self, audio_queue_input: asyncio.Queue, audio_queue_output: asyncio.Queue, player=None):
         """Bucle principal de escucha con VAD inteligente, wake word y detección de interrupciones (barge-in)."""
         silence_frames = 0
+        barge_in_counter = 0
         frames_per_second = AUDIO_IN_RATE / CHUNK_SIZE
-        max_silence_seconds = 1.0
+        max_silence_seconds = 0.9
         user_spoke = False
 
         while True:
@@ -123,26 +124,30 @@ class AudioRecorder:
                     continue
 
                 if not self.processing_tool:
-                    is_voice = self.vad.is_speech(data, current_threshold=self.silence_threshold)
                     is_speaking = player.is_speaking if player else False
 
                     if is_speaking:
-                        # Barge-in: si el usuario habla mientras Atlas habla, interrumpir
-                        if is_voice:
-                            logger.info("🎙️ Interrupción de voz detectada (Barge-in)")
+                        # Mientras Atlas habla por los parlantes, elevar el umbral para evitar que el micrófono escuche los propios parlantes (Eco Acústico)
+                        # y exigir al menos 6 frames consecutivos (~200ms) de voz fuerte para confirmar un barge-in intencional
+                        barge_threshold = max(4500.0, (self.silence_threshold or 2500.0) * 2.2)
+                        is_loud_speech = self.vad.is_speech(data, current_threshold=barge_threshold)
+
+                        if is_loud_speech:
+                            barge_in_counter += 1
+                        else:
+                            barge_in_counter = 0
+
+                        if barge_in_counter >= 6:
+                            logger.info("🎙️ Interrupción de usuario confirmada (Barge-in intencional)")
+                            barge_in_counter = 0
                             if player:
-                                player.is_speaking = False
-
-                            while not audio_queue_output.empty():
-                                try:
-                                    audio_queue_output.get_nowait()
-                                except asyncio.QueueEmpty:
-                                    break
-
+                                player.stop_and_clear(audio_queue_output)
                             silence_frames = 0
                             user_spoke = True
                             await audio_queue_input.put(data)
                     else:
+                        barge_in_counter = 0
+                        is_voice = self.vad.is_speech(data, current_threshold=self.silence_threshold)
                         await audio_queue_input.put(data)
 
                         if not is_voice:

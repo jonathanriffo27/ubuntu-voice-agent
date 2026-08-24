@@ -22,7 +22,7 @@ def play_sound(sound_type: str):
 
 
 class AudioPlayer:
-    """Reproduce audio recibido del modelo LLM de forma fluida y sin microcortes."""
+    """Reproduce audio recibido del modelo LLM de forma fluida y continua sin microcortes."""
 
     def __init__(self, out_stream):
         self.out_stream = out_stream
@@ -45,15 +45,12 @@ class AudioPlayer:
         """
         while True:
             try:
-                # Esperar chunk de audio
-                data = await audio_queue_output.get()
-                self.is_speaking = True
-
-                # Escribir chunk al hardware de audio (bloqueante en thread worker)
-                await asyncio.to_thread(self.out_stream.write, data, exception_on_underflow=False)
-
-                # Si no quedan más chunks en la cola, marcar fin de habla
-                if audio_queue_output.empty():
+                # Esperar chunk con timeout para detectar silencio final y no dejar is_speaking colgado
+                try:
+                    data = await asyncio.wait_for(audio_queue_output.get(), timeout=0.25)
+                    self.is_speaking = True
+                    await asyncio.to_thread(self.out_stream.write, data, exception_on_underflow=False)
+                except asyncio.TimeoutError:
                     self.is_speaking = False
             except asyncio.CancelledError:
                 self.is_speaking = False
