@@ -120,26 +120,39 @@ class AbrirAplicacionTool(BaseTool):
         if not nombre:
             return ToolResult(success=False, content="Falta el nombre.")
             
-        nombre_lower = nombre.lower().strip()
-        
         mapeos = {
             "gmail": "xdg-open 'https://mail.google.com'",
             "youtube": "xdg-open 'https://youtube.com'",
             "netflix": "xdg-open 'https://netflix.com'",
             "whatsapp": "xdg-open 'https://web.whatsapp.com'",
+            "telegram": "telegram-desktop || xdg-open 'https://web.telegram.org'",
+            "telegram-desktop": "telegram-desktop",
             "calculadora": "gnome-calculator",
-            "terminal": "gnome-terminal",
+            "terminal": "gnome-terminal || alacritty || kitty || xterm",
             "navegador": "xdg-open 'https://google.com'",
+            "chrome": "google-chrome || google-chrome-stable",
+            "firefox": "firefox",
+            "brave": "brave-browser",
             "archivos": "nautilus",
             "carpetas": "nautilus",
             "vscode": "code",
             "code": "code",
             "spotify": "spotify",
             "discord": "discord",
-            "onlyoffice": "onlyoffice-desktopeditors"
+            "obsidian": "obsidian",
+            "slack": "slack",
+            "onlyoffice": "onlyoffice-desktopeditors",
+            "documentos": "onlyoffice-desktopeditors || libreoffice"
         }
         
         cmd = mapeos.get(nombre_lower)
+        if not cmd:
+            import re
+            if re.match(r'^[a-zA-Z0-9_-]+$', nombre_lower):
+                candidate = shutil.which(nombre_lower) or shutil.which(f"{nombre_lower}-desktop") or shutil.which(f"gnome-{nombre_lower}")
+                if candidate:
+                    cmd = candidate
+
         if not cmd:
             logger.warning(f"Aplicación '{nombre}' no encontrada en la lista de permitidas.")
             return ToolResult(success=False, content=f"No conozco la aplicación '{nombre}'. Pide confirmación y usa ejecutar_comando si es necesario.")

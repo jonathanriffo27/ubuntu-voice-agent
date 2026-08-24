@@ -151,15 +151,24 @@ class DeveloperAgent:
             return timeout_msg
 
         except Exception as e:
-            logger.error(f"Error en subagente desarrollador [{task_id}]: {e}")
+            err_str = str(e)
+            if "connection" in err_str.lower() or "connect" in err_str.lower() or "failed" in err_str.lower():
+                err_msg = (
+                    f"No se pudo conectar con CLIProxyAPI en {getattr(self.client, 'base_url', '127.0.0.1:8317')}. "
+                    "Por favor inicia el servicio del túnel con: 'systemctl --user start cliproxy-tunnel'"
+                )
+            else:
+                err_msg = f"Error: {err_str}"
+
+            logger.error(f"Error en subagente desarrollador [{task_id}]: {err_msg}")
             self.event_bus.publish(
                 TaskCompleted(
                     ConversationContext(),
                     task_id=task_id,
                     success=False,
-                    result=f"Error: {str(e)}"
+                    result=err_msg
                 )
             )
-            return f"Error ejecutando tarea de desarrollo: {str(e)}"
+            return err_msg
         finally:
             self._active_tasks.pop(task_id, None)
