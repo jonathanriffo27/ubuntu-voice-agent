@@ -21,8 +21,8 @@ ui:
 developer_agent:
   enabled: true
   provider: "cliproxy"
-  base_url: "http://127.0.0.1:8317/v1"
-  api_key: "YOUR_CLIPROXY_API_KEY"
+  base_url: "${CLIPROXY_BASE_URL:-http://127.0.0.1:8317/v1}"
+  api_key: "${CLIPROXY_API_KEY:-YOUR_CLIPROXY_API_KEY}"
   model: "gemini-3.7-flash-high"
   temperature: 0.2
   max_iterations: 15

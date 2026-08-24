@@ -1,6 +1,11 @@
+import json
 import pytest
+from aiohttp.test_utils import make_mocked_request
 from src.events.bus import EventBus
 from src.events.base import ConversationContext, VoiceListeningStarted, ToolStarted
+from src.brain.trajectory import TrajectoryManager
+from src.security.approval import ApprovalManager
+from src.reminders.scheduler import AsyncReminderScheduler
 from src.ui.web_overlay import WebOverlayServer
 
 
@@ -19,8 +24,6 @@ async def test_web_overlay_initialization():
 
 @pytest.mark.asyncio
 async def test_web_overlay_index_route():
-    from aiohttp.test_utils import make_mocked_request
-
     bus = EventBus()
     overlay = WebOverlayServer(bus, port=8889)
     req = make_mocked_request('GET', '/')
@@ -28,3 +31,40 @@ async def test_web_overlay_index_route():
     assert resp.status == 200
     assert "Atlas HUD" in resp.text
 
+
+@pytest.mark.asyncio
+async def test_web_overlay_api_routes():
+    bus = EventBus()
+    tm = TrajectoryManager(event_bus=bus, file_path="test_overlay_traj.json")
+    tm.add_step(event_type="TestEvent", role="user", summary="Test prompt")
+    approval = ApprovalManager(event_bus=bus)
+    reminders = AsyncReminderScheduler(event_bus=bus)
+
+    overlay = WebOverlayServer(
+        event_bus=bus,
+        port=8890,
+        approval_manager=approval,
+        trajectory_manager=tm,
+        reminder_scheduler=reminders
+    )
+
+    # 1. Test /api/status
+    req_status = make_mocked_request('GET', '/api/status')
+    resp_status = await overlay.handle_api_status(req_status)
+    assert resp_status.status == 200
+    data_status = json.loads(resp_status.text)
+    assert data_status["status"] == "online"
+
+    # 2. Test /api/trajectory
+    req_traj = make_mocked_request('GET', '/api/trajectory')
+    resp_traj = await overlay.handle_api_trajectory(req_traj)
+    assert resp_traj.status == 200
+    data_traj = json.loads(resp_traj.text)
+    assert data_traj["total_steps"] >= 1
+
+    # Cleanup
+    import os
+    if os.path.exists("test_overlay_traj.json"):
+        os.remove("test_overlay_traj.json")
+    if os.path.exists("test_overlay_traj.json.tmp"):
+        os.remove("test_overlay_traj.json.tmp")

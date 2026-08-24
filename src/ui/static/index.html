@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Atlas HUD | Live Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="header">
+        <div class="logo">
+            <div class="status-dot" id="statusDot"></div>
+            <h1>ATLAS <span class="badge">AI RUNTIME</span></h1>
+        </div>
+        <div class="nav-tabs">
+            <button class="tab-btn active" data-tab="tabChat">💬 Live Chat & Tools</button>
+            <button class="tab-btn" data-tab="tabTrajectory">🌳 Trajectory View</button>
+            <button class="tab-btn" data-tab="tabReminders">⏰ Recordatorios</button>
+        </div>
+        <div class="controls">
+            <button class="btn btn-secondary" id="btnToggleMic">⏸️ Pausar Mic</button>
+            <button class="btn btn-secondary" id="btnClearChat">🧹 Limpiar</button>
+        </div>
+    </header>
+
+    <div class="hitl-banner" id="hitlBanner">
+        <div class="hitl-icon">🛡️</div>
+        <div class="hitl-content">
+            <div class="hitl-title" id="hitlTitle">Autorización Requerida</div>
+            <div class="hitl-desc" id="hitlDesc">El subagente solicita permiso para ejecutar una acción crítica.</div>
+            <pre class="hitl-code" id="hitlCode"></pre>
+        </div>
+        <div class="hitl-actions">
+            <button class="btn btn-approve" id="btnApprove">✅ Aprobar</button>
+            <button class="btn btn-reject" id="btnReject">❌ Rechazar</button>
+        </div>
+    </div>
+
+    <main class="main-layout">
+        <!-- TAB 1: LIVE CHAT & TOOLS -->
+        <section class="tab-content active" id="tabChat">
+            <div class="card chat-card">
+                <div class="card-header">
+                    <h2>💬 Transcripción en Vivo</h2>
+                    <span class="pulse-indicator" id="pulseIndicator">● Escuchando</span>
+                </div>
+                <div class="chat-feed" id="chatFeed">
+                    <div class="msg-bubble msg-atlas">
+                        ⚡ Sistema Atlas en línea y listo. Puedes hablar o escribir prompts.
+                    </div>
+                </div>
+                <form class="chat-input-bar" id="chatForm">
+                    <input type="text" id="chatInput" placeholder="Escribe un prompt para Atlas o envía un comando..." autocomplete="off">
+                    <button type="submit" class="btn btn-primary">Enviar</button>
+                </form>
+            </div>
+
+            <div class="side-panel">
+                <div class="card wave-card">
+                    <div class="card-header">
+                        <h2>🎙️ Audio Stream</h2>
+                        <span class="sub-text" id="connectionStatus">Conectado</span>
+                    </div>
+                    <div class="wave-container" id="waveContainer">
+                        <div class="wave-bar"></div>
+                        <div class="wave-bar"></div>
+                        <div class="wave-bar"></div>
+                        <div class="wave-bar"></div>
+                        <div class="wave-bar"></div>
+                        <div class="wave-bar"></div>
+                        <div class="wave-bar"></div>
+                        <div class="wave-bar"></div>
+                    </div>
+                </div>
+
+                <div class="card tools-card">
+                    <div class="card-header">
+                        <h2>🔧 Feed de Herramientas</h2>
+                    </div>
+                    <div class="tools-feed" id="toolsFeed">
+                        <div class="tool-item">
+                            <span class="tool-badge">STARTUP</span>
+                            <span class="tool-name">Sistema inicializado correctamente</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- TAB 2: TRAJECTORY VIEW (DEEPSEEK HARNESS STYLE) -->
+        <section class="tab-content" id="tabTrajectory">
+            <div class="card trajectory-card">
+                <div class="card-header">
+                    <h2>🌳 Trajectory & ReAct Timeline</h2>
+                    <div class="header-actions">
+                        <button class="btn btn-secondary btn-sm" id="btnRefreshTrajectory">🔄 Actualizar</button>
+                        <span class="badge" id="stepCountBadge">0 Pasos</span>
+                    </div>
+                </div>
+                <p class="section-desc">Registro auditable e inmutable de cada razonamiento, decisión de subagente, llamada a herramientas y aprobación en tiempo real.</p>
+                <div class="timeline-container" id="trajectoryTimeline">
+                    <!-- Los pasos de la trayectoria se renderizan dinámicamente -->
+                </div>
+            </div>
+        </section>
+
+        <!-- TAB 3: REMINDERS -->
+        <section class="tab-content" id="tabReminders">
+            <div class="card reminders-card">
+                <div class="card-header">
+                    <h2>⏰ Recordatorios y Tareas Programadas</h2>
+                </div>
+                <div class="reminders-feed" id="remindersFeed">
+                    <div class="reminder-empty">No hay recordatorios activos en este momento.</div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -23,6 +23,8 @@ from src.agents.client import CLIProxyClient
 from src.agents.tools import AgentCodeTools
 from src.agents.developer_agent import DeveloperAgent
 
+from src.brain.trajectory import TrajectoryManager
+
 # Inicializar logging estructurado (consola limpia, log completo a disco)
 setup_logging(log_file="latest_session.log")
 logger = get_logger("bootstrap")
@@ -39,20 +41,25 @@ if __name__ == "__main__":
     event_bus = EventBus()
     ui = CLIInterface(event_bus)
 
+    # Inicializar el gestor de trayectoria y memoria de sesión persistente
+    trajectory_manager = TrajectoryManager(event_bus=event_bus)
+
     # Inicializar la compuerta de aprobación humana (HITL)
     approval_manager = ApprovalManager(event_bus=event_bus)
 
-    # Inicializar el servidor de HUD / Overlay Web con soporte HITL
+    # Inicializar el motor de recordatorios
+    reminder_scheduler = AsyncReminderScheduler(event_bus=event_bus)
+
+    # Inicializar el servidor de HUD / Overlay Web con soporte HITL y Trajectory
     overlay_server = None
     if config.ui.overlay_enabled:
         overlay_server = WebOverlayServer(
             event_bus,
             port=config.ui.overlay_port,
-            approval_manager=approval_manager
+            approval_manager=approval_manager,
+            trajectory_manager=trajectory_manager,
+            reminder_scheduler=reminder_scheduler
         )
-
-    # Inicializar el motor de recordatorios
-    reminder_scheduler = AsyncReminderScheduler(event_bus=event_bus)
 
     # Inicializar el registro de herramientas
     registry = ToolRegistry()
@@ -115,6 +122,7 @@ if __name__ == "__main__":
         mcp_manager=mcp_manager,
         overlay_server=overlay_server,
         reminder_scheduler=reminder_scheduler,
-        approval_manager=approval_manager
+        approval_manager=approval_manager,
+        trajectory_manager=trajectory_manager
     )
     assistant.run()

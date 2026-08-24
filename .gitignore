@@ -6,6 +6,7 @@ __pycache__/
 /core
 jarvis_memory.json
 atlas_knowledge.json
+atlas_trajectory.json
 *.json.tmp
 *.log
 genai_error.txt

@@ -40,6 +40,7 @@ class Assistant:
         overlay_server=None,
         reminder_scheduler=None,
         approval_manager=None,
+        trajectory_manager=None,
         max_reconnect_attempts: int = 5,
         reconnect_initial_backoff: float = 1.0,
         reconnect_max_backoff: float = 30.0
@@ -54,6 +55,7 @@ class Assistant:
         self.overlay_server = overlay_server
         self.reminder_scheduler = reminder_scheduler
         self.approval_manager = approval_manager
+        self.trajectory_manager = trajectory_manager
 
         self.max_reconnect_attempts = max_reconnect_attempts
         self.reconnect_initial_backoff = reconnect_initial_backoff
@@ -307,7 +309,7 @@ class Assistant:
 
         self.player = AudioPlayer(self.out_stream)
 
-        sys_prompt, _ = build_system_prompt(self.knowledge_manager)
+        sys_prompt, _ = build_system_prompt(self.knowledge_manager, trajectory_manager=self.trajectory_manager)
 
         q_in = asyncio.Queue()
         q_out = asyncio.Queue()
