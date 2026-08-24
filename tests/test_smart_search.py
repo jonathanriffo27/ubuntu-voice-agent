@@ -29,10 +29,12 @@ async def test_duckduckgo_search_parsing():
     """
 
     mock_resp = MagicMock()
+    mock_resp.status_code = 200
     mock_resp.text = fake_html
     mock_resp.raise_for_status = MagicMock()
 
-    with patch("httpx.AsyncClient.post", AsyncMock(return_value=mock_resp)):
+    with patch.object(engine, "_try_instant_api", AsyncMock(return_value=None)), \
+         patch("httpx.AsyncClient.post", AsyncMock(return_value=mock_resp)):
         res = await engine.search("python")
         assert res.success is True
         assert len(res.results) == 1

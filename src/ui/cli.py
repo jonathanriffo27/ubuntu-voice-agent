@@ -8,6 +8,7 @@ from src.events.base import (
     AudioStreamChunk,
     AudioStreamEnded,
     AssistantTextChunk,
+    SpeechRecognized,
     UserInterrupted,
     ListeningStarted,
     ListeningStopped,
@@ -89,6 +90,13 @@ class CLIInterface:
 
         elif isinstance(event, ModelThinkingFinished):
             print("\r" + " " * 45 + "\r", end="", flush=True)
+
+        elif isinstance(event, SpeechRecognized):
+            self._flush_stream()
+            print("\r" + " " * 45 + "\r", end="", flush=True)
+            text_clean = event.text.strip()
+            if text_clean and text_clean != "[Audio enviado]":
+                print(f"{C_CYAN}│{C_RESET} 🎙️  {C_BOLD}Tú (voz):{C_RESET} {C_GREEN}{text_clean}{C_RESET}")
 
         elif isinstance(event, AssistantTextChunk):
             if not self._in_text_stream:

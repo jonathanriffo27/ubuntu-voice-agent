@@ -114,3 +114,33 @@ async def test_prompt_history_tracking():
 
     assert manager._history == ["primer prompt", "segundo prompt"]
 
+
+@pytest.mark.asyncio
+async def test_process_chunk_arrows_and_keys():
+    manager = TerminalInteractionManager(assistant=MagicMock())
+
+    # Escribir 'hola'
+    await manager._process_chunk(b"hola")
+    assert "".join(manager._buffer) == "hola"
+    assert manager._cursor_pos == 4
+
+    # Flecha izquierda dos veces (←)
+    await manager._process_chunk(b"\x1b[D")
+    await manager._process_chunk(b"\x1b[D")
+    assert manager._cursor_pos == 2
+
+    # Insertar 'XX' en la posición 2
+    await manager._process_chunk(b"XX")
+    assert "".join(manager._buffer) == "hoXXla"
+    assert manager._cursor_pos == 4
+
+    # Backspace una vez
+    await manager._process_chunk(b"\x7f")
+    assert "".join(manager._buffer) == "hoXla"
+    assert manager._cursor_pos == 3
+
+    # Flecha derecha (→)
+    await manager._process_chunk(b"\x1b[C")
+    assert manager._cursor_pos == 4
+
+
