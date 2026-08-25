@@ -134,11 +134,12 @@ class AgentCodeTools:
                 ruta_abs = os.path.join(_PROJECT_ROOT, ruta_rel)
 
                 desc = f"Crear/modificar archivo: {ruta_rel} ({len(contenido)} caracteres)"
-                # Solicitar aprobación humana (HITL)
+                # Solicitar aprobación humana (HITL) con 120s de margen
                 approved = await self.approval_manager.request_approval(
                     action_type="file_write",
                     description=desc,
-                    payload=contenido
+                    payload=contenido,
+                    timeout=120.0
                 )
                 if not approved:
                     return f"Acción rechazada por el usuario: No se permitió escribir '{ruta_rel}'."
@@ -165,15 +166,25 @@ class AgentCodeTools:
                 if not cmd:
                     return "Error: Comando vacío."
 
-                desc = "Ejecutar comando en terminal"
-                # Solicitar aprobación humana (HITL)
-                approved = await self.approval_manager.request_approval(
-                    action_type="shell_command",
-                    description=desc,
-                    payload=cmd
+                # Comandos seguros de solo lectura (diagnóstico y exploración de entorno)
+                SAFE_READONLY_PREFIXES = (
+                    "which ", "whereis ", "type ", "echo ", "uname", "pwd", "ls", "find ", "grep ",
+                    "cat ", "head ", "tail ", "python --version", "python3 --version", "git status",
+                    "git diff", "git log", "pip list", "env | grep", "env|grep"
                 )
-                if not approved:
-                    return f"Comando rechazado por el usuario: '{cmd}' no fue ejecutado."
+                is_safe_readonly = any(cmd.startswith(p) for p in SAFE_READONLY_PREFIXES)
+
+                if not is_safe_readonly:
+                    desc = "Ejecutar comando en terminal"
+                    # Solicitar aprobación humana (HITL) con 120s de margen
+                    approved = await self.approval_manager.request_approval(
+                        action_type="shell_command",
+                        description=desc,
+                        payload=cmd,
+                        timeout=120.0
+                    )
+                    if not approved:
+                        return f"Comando rechazado por el usuario: '{cmd}' no fue ejecutado."
 
                 res = subprocess.run(
                     cmd,

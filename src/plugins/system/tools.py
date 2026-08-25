@@ -120,6 +120,8 @@ class AbrirAplicacionTool(BaseTool):
         if not nombre:
             return ToolResult(success=False, content="Falta el nombre.")
             
+        nombre_lower = nombre.lower().strip()
+            
         mapeos = {
             "gmail": "xdg-open 'https://mail.google.com'",
             "youtube": "xdg-open 'https://youtube.com'",
