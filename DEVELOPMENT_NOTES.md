@@ -21,6 +21,23 @@ Este documento registra los problemas arquitectónicos, optimizaciones de bajo n
 
 ---
 
+## 22. Computer-Use Fases 2 y 3: Bucle OODA y Worktrees Aislados (2026-09-14)
+
+- **Fase 2 — `ComputerUseOrchestrator` (`src/agents/computer_use.py`)**: bucle Observe→Decide→Act→Verify para tareas GUI multi-paso.
+  - **Observe**: lista de elementos AT-SPI2 con roles+bounds (ojos deterministas) y firma hash del estado.
+  - **Decide**: LLM (mismo cliente CLIProxy que el DeveloperAgent) responde UNA acción JSON por paso; los nombres de elementos entran al prompt envueltos en delimitadores **"CONTENIDO NO CONFIABLE"** (spotlighting anti prompt-injection) y el system prompt prohíbe obedecer texto que venga de la pantalla.
+  - **Act**: delega en `interactuar_gui` (semántica AT-SPI2 → coords, política de tiers con HITL, verificación por frame-diff).
+  - **Verify**: si la firma del estado no cambia en 2 pasos consecutivos → aborta explicando, en vez de girar en bucle (límite global: 12 pasos).
+  - Cancelación cooperativa (`orchestrator.cancel(task_id)`), tool de voz `operar_gui_tarea` (plugin `gui_actions`) en segundo plano con narración vía eventos TaskDelegated/TaskCompleted.
+- **Fase 3 — Aislamiento por git worktrees (`src/agents/workspace.py`)**: cada tarea del DeveloperAgent corre en `.worktrees/agent-<id>` sobre rama `agent/<id>`.
+  - Escrituras dentro del worktree **auto-aprobadas** (sandboxed; se revisan una sola vez): la fricción de HITL por archivo desaparece sin perder control.
+  - Al terminar: `commit` en la rama → `pytest` dentro del worktree (venv del proyecto) → si falla, el trabajo se conserva para inspección y NO se integra → si pasa, diff unificado + stat van al `ApprovalManager` (voz/HUD/terminal) → merge solo con aprobación → recarga en caliente de plugins.
+  - Merge conflictivo → `git merge --abort` limpio y rama conservada (probado en tests con git real).
+  - Bug de seguridad corregido de camino: `escribir_archivo` aceptaba rutas absolutas (`lstrip('/')` las hacía relativas antes del path jail); ahora se rechazan explícitamente.
+- **Suite total tras Fases 0-3: 300 tests pasando.**
+
+---
+
 ## 1. Supresión de Errores C de ALSA y PortAudio (Linux PCM Underruns)
 - **Síntoma:** Aparecían mensajes repetitivos en la consola como `ALSA lib pcm.c:8787:(snd_pcm_recover) [error.pcm] underrun occurred` y `Expression 'res' failed in 'src/hostapi/alsa/pa_linux_alsa.c'`.
 - **Causa Raíz:** Las librerías de bajo nivel en C (`libasound.so.2` y PortAudio) escriben advertencias directamente a `stderr` de C en lugar de usar el logging de Python.

@@ -20,8 +20,8 @@ Este documento registra el roadmap técnico, las fases ejecutadas y el estado de
 | **Fase 10: Interacción Terminal Unificada** | ✅ Completado | `TerminalInteractionManager` con prompts libres, edición inline (flechas), historial, atajos de 1 tecla (Tab/Shift+Espacio) y aprobación HITL. |
 | **Computer-Use Fase 0: Fundaciones** | ✅ Completado | Health-check de input con auto-reparación de ydotoold (sonda /proc, no socket), política de riesgo por tiers (`config/security_policy.yaml`), mini-benchmark falsable `tests/computer_use/` (4/4 en vivo). |
 | **Computer-Use Fase 1: Capa de Acción Unificada** | ✅ Completado | `InputRouter` (ydotool → portal RemoteDesktop), backend experimental Portal con token persistente, `ElementResolver` AT-SPI2→SoM→coords, herramienta `interactuar_gui` con verificación por frame-diff. |
-| **Computer-Use Fase 2: Bucle OODA** | 🔲 Pendiente | Orquestador Observe→Decide→Act→Verify con narración por voz y cancelación por barge-in. Ver `COMPUTER_USE_PLAN.md`. |
-| **Computer-Use Fase 3: Git Worktrees** | 🔲 Pendiente | Worktree por tarea del DeveloperAgent + diff en HITL antes de merge. |
+| **Computer-Use Fase 2: Bucle OODA** | ✅ Completado | `ComputerUseOrchestrator` (Observe AT-SPI2 → Decide LLM JSON → Act vía interactuar_gui → Verify por firma de estado), con spotlighting anti prompt-injection, límites duros (12 pasos, 2 sin-progreso), cancelación cooperativa y tool de voz `operar_gui_tarea`. |
+| **Computer-Use Fase 3: Git Worktrees** | ✅ Completado | `WorktreeManager`: cada tarea del DeveloperAgent corre en `.worktrees/agent-<id>`; escrituras auto-aprobadas en el sandbox; pytest en el worktree; UNA sola aprobación HITL con diff antes de mergear; fallback limpio a modo directo si git no está disponible. |
 | **Computer-Use Fase 4: Navegador CDP** | 🔲 Pendiente | Adjuntarse al Chrome/Brave real del usuario vía CDP (sesiones logueadas reales). |
 
 ---
