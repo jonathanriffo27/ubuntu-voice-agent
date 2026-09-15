@@ -37,12 +37,17 @@ _DEFAULT_RULES = {
         "analizar_pantalla", "capturar_pantalla*", "leer_archivo", "listar_directorio",
         "buscar_*", "consultar_*", "que_suena", "listar_*", "leer_*", "status*",
         "obtener_*", "ver_*",
+        "navegador_web.leer", "navegador_web.elementos", "navegador_web.pestanas",
+        "navegador_web.captura",
     ],
     RiskTier.LOCAL_WRITE: [
         "interactuar_gui", "abrir_*", "cerrar_aplicacion", "reproducir_*",
         "controlar_musica", "escribir_archivo", "crear_*", "editar_*",
         "ajustar_*", "silenciar*", "imprimir_en_consola", "agendar_*",
         "crear_recordatorio",
+        "navegador_web.abrir", "navegador_web.click", "navegador_web.escribir",
+        "navegador_web.tecla", "navegador_web.scroll", "navegador_web.atras",
+        "navegador_web.cerrar",
     ],
     RiskTier.IRREVERSIBLE: [
         "enviar_*", "*correo*", "ejecutar_comando*", "ejecutar_shell*",

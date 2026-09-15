@@ -38,6 +38,22 @@ Este documento registra los problemas arquitectónicos, optimizaciones de bajo n
 
 ---
 
+## 23. Computer-Use Fase 4: Navegador Real del Usuario vía CDP (2026-09-15)
+
+- **Contexto**: `COMPUTER_USE_PLAN.md` Fase 4. El plan pedía "adjuntarse al Chrome/Brave real donde ya viven las sesiones". La investigación (verificada contra el blog oficial de Chrome Developers) reveló una restricción que cambia el diseño: **desde Chromium 136, `--remote-debugging-port` es ignorado por completo si se usa el `--user-data-dir` por defecto** (mitigación contra infostealers que extraían cookies vía CDP). No hay bypass oficial.
+- **Diseño adoptado**: Atlas lanza/detecta una instancia dedicada de Brave/Chromium con **perfil propio persistente** en `~/.local/share/atlas/browser-profile`. El usuario inicia sesión ahí una vez; las cookies sobreviven entre reinicios de Atlas. Ventaja colateral: jamás se toca ni se arriesga el perfil personal del usuario.
+- **`src/cdp/` (sin Playwright ni chromedriver, solo `websockets` + `aiohttp` que ya estaban)**:
+  - `client.py`: **un solo websocket** al `webSocketDebuggerUrl`; pestañas multiplexadas con `Target.attachToTarget {flatten: true}` + `sessionId` por comando (evita un socket por pestaña). Timeouts por comando con limpieza de futures huérfanos; pérdida de conexión falla todos los pendientes.
+  - `manager.py`: sonda `http://127.0.0.1:9222/json/version` → si ya hay navegador con debug, se adjunta sin lanzar nada; si no, lo lanza con `--remote-allow-origins=*` (Chromium valida el header `Origin` y rechaza clientes no-Chrome con 403). Modo **headless desechable** con perfil temporal en /tmp (trabajo paralelo sin sesiones). `shutdown()` solo mata el proceso si lo lanzó Atlas.
+  - `page.py`: mismo principio que el `ElementResolver` de la Fase 1 pero dentro del navegador: **snapshot determinista** de elementos interactivos (`[1] button «Enviar»`) marcando cada nodo con atributo temporal `data-atlas-idx`; click por índice/nombre (`el.click()` JS, con `click_at(x,y)` trusted como fallback) y escritura con `Input.insertText` (evento trusted tipo IME, compatible con React) con **fallback a setter nativo** del prototype si el campo quedó vacío.
+- **Tool de voz `navegador_web`** (plugin `src/plugins/navigator/`): acciones `abrir/leer/elementos/click/escribir/tecla/scroll/atras/pestanas/cerrar/captura`.
+  - Riesgo por acción en `security_policy.yaml` (`navegador_web.leer` = read_only; `click/escribir` = local_write) y el **payload** (nombre del botón, texto) pasa por `escalation_patterns`: "confirmar compra", "enviar mensaje/formulario", "realizar pago" → Tier 3 → HITL multi-canal ya existente.
+  - El texto leído de páginas se devuelve envuelto en `=== CONTENIDO WEB (DATOS NO CONFIABLES) ===` (spotlighting, consistente con Fase 2): una web maliciosa no puede inyectar instrucciones al planner.
+  - Cuando un elemento no se encuentra, la tool devuelve los candidatos visibles para que el LLM reintente (mismo patrón de autocorrección que `interactuar_gui`).
+- **Suite total tras Fase 4: 332 tests pasando** (32 nuevos: cliente CDP con fake websocket, PageController con fake CDP, tool de voz con fake manager + HITL).
+
+---
+
 ## 1. Supresión de Errores C de ALSA y PortAudio (Linux PCM Underruns)
 - **Síntoma:** Aparecían mensajes repetitivos en la consola como `ALSA lib pcm.c:8787:(snd_pcm_recover) [error.pcm] underrun occurred` y `Expression 'res' failed in 'src/hostapi/alsa/pa_linux_alsa.c'`.
 - **Causa Raíz:** Las librerías de bajo nivel en C (`libasound.so.2` y PortAudio) escriben advertencias directamente a `stderr` de C en lugar de usar el logging de Python.

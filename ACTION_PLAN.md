@@ -22,7 +22,10 @@ Este documento registra el roadmap técnico, las fases ejecutadas y el estado de
 | **Computer-Use Fase 1: Capa de Acción Unificada** | ✅ Completado | `InputRouter` (ydotool → portal RemoteDesktop), backend experimental Portal con token persistente, `ElementResolver` AT-SPI2→SoM→coords, herramienta `interactuar_gui` con verificación por frame-diff. |
 | **Computer-Use Fase 2: Bucle OODA** | ✅ Completado | `ComputerUseOrchestrator` (Observe AT-SPI2 → Decide LLM JSON → Act vía interactuar_gui → Verify por firma de estado), con spotlighting anti prompt-injection, límites duros (12 pasos, 2 sin-progreso), cancelación cooperativa y tool de voz `operar_gui_tarea`. |
 | **Computer-Use Fase 3: Git Worktrees** | ✅ Completado | `WorktreeManager`: cada tarea del DeveloperAgent corre en `.worktrees/agent-<id>`; escrituras auto-aprobadas en el sandbox; pytest en el worktree; UNA sola aprobación HITL con diff antes de mergear; fallback limpio a modo directo si git no está disponible. |
-| **Computer-Use Fase 4: Navegador CDP** | 🔲 Pendiente | Adjuntarse al Chrome/Brave real del usuario vía CDP (sesiones logueadas reales). |
+| **Computer-Use Fase 4: Navegador CDP** | ✅ Completado | Navegador real vía CDP sin drivers: instancia dedicada con perfil persistente (restricción Chromium 136 verificada), snapshot de elementos `[n]` determinista, `navegador_web` con tiers + spotlighting; headless desechable disponible. |
+| **Computer-Use Fase 5: Sesión headless** | ⏸️ Aplazada | Trabajo paralelo desechable (scraping/builds): requiere sway/cage + virtual pointer/keyboard wlr + bus AT-SPI propio. Esfuerzo 1-2 semanas; se activa solo si hay necesidad real. |
+| **Computer-Use Fase 6: Endurecimiento** | 🔲 Pendiente | `bwrap` para comandos del subagente (red off por defecto), credential broker formal, monitor de anomalías con pausa automática. |
+| **Computer-Use Fase 7: Medición continua** | 🔲 Pendiente | Correr `tests/computer_use/` en cada cambio del harness; registrar % en el plan. |
 
 ---
 
@@ -70,7 +73,7 @@ Este documento registra el roadmap técnico, las fases ejecutadas y el estado de
 ---
 
 ## 🧪 Pruebas Automatizadas
-La suite cuenta con **56 pruebas unitarias** pasando al 100%:
+La suite cuenta con **332 pruebas unitarias** pasando al 100% (+1 sonda en vivo opcional):
 ```bash
 ./venv/bin/pytest tests/ -v
 ```

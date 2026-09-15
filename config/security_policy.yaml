@@ -22,9 +22,20 @@ tiers:
     - "leer_*"
     - "que_suena"
     - "ver_*"
+    - "navegador_web.leer"     # contenido web entra con spotlighting (no confiable)
+    - "navegador_web.elementos"
+    - "navegador_web.pestanas"
+    - "navegador_web.captura"
 
   local_write:
     - "interactuar_gui"        # contenido sensible eleva a tier 3 automáticamente
+    - "navegador_web.abrir"
+    - "navegador_web.click"    # el payload (nombre del botón) se clasifica aparte
+    - "navegador_web.escribir"
+    - "navegador_web.tecla"
+    - "navegador_web.scroll"
+    - "navegador_web.atras"
+    - "navegador_web.cerrar"
     - "abrir_*"
     - "cerrar_aplicacion"
     - "reproducir_*"
@@ -58,3 +69,7 @@ escalation_patterns:
   - '\b(cvv|tarjeta|card\s*number|\d{13,16})\b'
   - '(confirmar\s+compra|realizar\s+pago|transferencia)'
   - '(eliminar\s+todo|borrar\s+todo|formatear)'
+  # Botones/envíos web: cualquier click o texto que huela a acción irreversible
+  # en el navegador (el nombre del botón va en el payload de navegador_web.*)
+  - '(enviar\s+(mensaje|formulario|solicitud|pago)|publicar\s+(comentario|anuncio|post))'
+  - '(confirmar\s+(pedido|pago|compra)|finalizar\s+compra|passkey|cerrar\s+sesi[oó]n)'
