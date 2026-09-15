@@ -1,3 +1,4 @@
+import re
 import sys
 from typing import Optional
 from src.events.base import (
@@ -26,6 +27,10 @@ from src.events.base import (
     ReminderTriggered,
     KnowledgeUpdated,
     ErrorOccurred,
+    TurnCompleted,
+    SessionReconnected,
+    WakeWordDetected,
+    WakeWordStandby,
 )
 
 # Códigos ANSI para diseño compacto y minimalista
@@ -49,7 +54,6 @@ class CLIInterface:
     def __init__(self, event_bus=None):
         self.event_bus = event_bus
         self._in_text_stream = False
-        self._last_event_was_stream = False
         if self.event_bus:
             self.event_bus.subscribe_all(self.display_event)
 
@@ -64,17 +68,31 @@ class CLIInterface:
             print(f"\n{C_CYAN}╔══════════════════════════════════════════════════════════════╗{C_RESET}")
             print(f"{C_CYAN}║ {C_BOLD}⚡ ATLAS AI RUNTIME (Multi-Agent Auto-Evolution)             {C_RESET}{C_CYAN}║{C_RESET}")
             print(f"{C_CYAN}╚══════════════════════════════════════════════════════════════╝{C_RESET}")
-            print(f"{C_CYAN}│{C_RESET} 🎙️  {C_BOLD}Voz:{C_RESET}        Live Preview ('Hey Atlas' o [Tab / Shift+Espacio] para Mute)")
+            print(f"{C_CYAN}│{C_RESET} 🎙️  {C_BOLD}Voz:{C_RESET}        Live Preview (Wake Word 'Alexa' o [Tab] para Mute)")
             print(f"{C_CYAN}│{C_RESET} 🤖  {C_BOLD}Subagente:{C_RESET}  Gemini 3.7 Flash High (CLIProxy Oracle)")
             print(f"{C_CYAN}│{C_RESET} 🔍  {C_BOLD}Búsqueda:{C_RESET}   Google → Tavily → DuckDuckGo (Deep Research)")
             print(f"{C_CYAN}│{C_RESET} 🌐  {C_BOLD}Web HUD:{C_RESET}    http://localhost:7890 (Dashboard interactivo)")
             print(f"{C_CYAN}│{C_RESET} ⌨️  {C_BOLD}Terminal:{C_RESET}   Escribe prompts libremente o [Enter] para aprobar")
-            print(f"{C_CYAN}│{C_RESET} 🚀  {C_GREEN}Sistema listo y escuchando...{C_RESET}")
+            print(f"{C_CYAN}│{C_RESET} 🚀  {C_GREEN}Sistema listo y en espera de activación ('Alexa')...{C_RESET}")
             print(f"{C_CYAN}├──────────────────────────────────────────────────────────────{C_RESET}")
 
         elif isinstance(event, SessionEnded):
             self._flush_stream()
             print(f"\n{C_CYAN}└─────────────────────────── [Sesión Finalizada] ──────────────{C_RESET}\n")
+
+        elif isinstance(event, SessionReconnected):
+            self._flush_stream()
+            print(f"{C_CYAN}│{C_RESET} 🔄 {C_DIM}[Reconectado]{C_RESET} {C_GREEN}Conexión con Gemini restablecida.{C_RESET}")
+
+        elif isinstance(event, WakeWordDetected):
+            self._flush_stream()
+            conf = int(event.confidence * 100)
+            print(f"{C_CYAN}│{C_RESET} 🔔 {C_GREEN}[Wake Word]{C_RESET} ¡'{event.wake_word}' detectado! (Confianza: {conf}%)")
+            print(f"{C_CYAN}│{C_RESET} 🎙️  {C_DIM}Escuchando consulta...{C_RESET}")
+
+        elif isinstance(event, WakeWordStandby):
+            self._flush_stream()
+            print(f"{C_CYAN}│{C_RESET} 💤 {C_DIM}[En Espera] Di 'Alexa' para despertar.{C_RESET}")
 
         elif isinstance(event, ListeningStarted):
             self._flush_stream()
@@ -101,9 +119,12 @@ class CLIInterface:
         elif isinstance(event, AssistantTextChunk):
             if not self._in_text_stream:
                 print("\r" + " " * 45 + "\r", end="", flush=True)
-                print(f"{C_CYAN}│{C_RESET} {C_BOLD}Atlas:{C_RESET} ", end="", flush=True)
+                print(f"{C_CYAN}│{C_RESET} 🤖 {C_BOLD}Atlas:{C_RESET} ", end="", flush=True)
                 self._in_text_stream = True
             print(event.text, end="", flush=True)
+
+        elif isinstance(event, TurnCompleted):
+            self._flush_stream()
 
         elif isinstance(event, UserInterrupted):
             if self._in_text_stream:
@@ -155,7 +176,6 @@ class CLIInterface:
 
             # Formatear vista previa compacta del comando o código
             payload_clean = event.payload.replace('\n', ' ').strip()
-            import re
             payload_clean = re.sub(r'\s+', ' ', payload_clean)
             if len(payload_clean) > 44:
                 payload_clean = payload_clean[:41] + "..."

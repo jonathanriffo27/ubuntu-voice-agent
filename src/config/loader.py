@@ -9,6 +9,41 @@ from .models import (
 )
 
 
+def load_dotenv(path: str = ".env") -> int:
+    """
+    Carga variables de un archivo .env simple (KEY=VALUE) al entorno del proceso.
+    - No sobrescribe variables ya exportadas en el entorno real (tienen precedencia).
+    - Soporta 'export KEY=VALUE', comillas simples/dobles, comentarios y líneas vacías.
+    Devuelve cuántas variables cargó.
+    """
+    if not os.path.exists(path):
+        return 0
+
+    loaded = 0
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].strip()
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            # Quitar comillas envolventes
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
+            # Ignorar placeholders de plantilla
+            if not key or not value or value.startswith("tu_clave"):
+                continue
+            if key not in os.environ:  # el entorno real siempre manda
+                os.environ[key] = value
+                loaded += 1
+    return loaded
+
+
 def _expand_env_vars(obj: Any) -> Any:
     """
     Expande recursivamente variables de entorno del tipo ${VAR_NAME} o ${VAR_NAME:-default}.

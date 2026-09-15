@@ -1,17 +1,34 @@
 from contextlib import asynccontextmanager
-from typing import List, AsyncIterator
+from typing import List, AsyncIterator, Optional
 from google import genai
 from google.genai import types
 from src.providers.base import BaseProvider, ProviderSession
 from src.providers.gemini_session import GeminiSession
 from src.tools.base import BaseTool
+from src.utils.logging import get_logger
+
+logger = get_logger("providers.gemini")
 
 
 class GeminiProvider(BaseProvider):
-    def __init__(self, model_name: str = "gemini-3.1-flash-live-preview", voice_name: str = "Aoede"):
+    def __init__(
+        self,
+        model_name: str = "gemini-3.1-flash-live-preview",
+        voice_name: str = "Aoede",
+        server_vad: bool = False,
+        affective_dialog: bool = False
+    ):
         self.model_name = model_name
         self.voice_name = voice_name
         self.client = genai.Client()
+        self.server_vad = server_vad
+        self.affective_dialog = affective_dialog
+        # Handle de session resumption: sobrevive a las reconexiones del WebSocket
+        # para no perder el contexto conversacional (las sesiones mueren ~cada 15 min).
+        self._session_handle: Optional[str] = None
+
+    def _save_session_handle(self, handle: str) -> None:
+        self._session_handle = handle
 
     @asynccontextmanager
     async def connect(self, system_prompt: str, tools: List[BaseTool]) -> AsyncIterator[ProviderSession]:
@@ -32,16 +49,51 @@ class GeminiProvider(BaseProvider):
                 declarations.append(decl)
             gemini_tools = [{"function_declarations": declarations}]
 
+        # Session Resumption: en la primera conexión solo se habilita; en las
+        # siguientes se pasa el handle guardado para restaurar el contexto.
+        # NOTA: transparent=True NO se usa: es exclusivo de Vertex AI (Enterprise)
+        # y la Developer API rechaza la conexión si se envía.
+        if self._session_handle:
+            resumption = types.SessionResumptionConfig(handle=self._session_handle)
+            logger.info("Reconectando con session resumption (contexto conversacional preservado).")
+        else:
+            resumption = types.SessionResumptionConfig()
+
         config = types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],
+            output_audio_transcription=types.AudioTranscriptionConfig(),
+            input_audio_transcription=types.AudioTranscriptionConfig(),
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self.voice_name)
                 )
             ),
             system_instruction=types.Content(parts=[types.Part.from_text(text=system_prompt)]),
-            tools=gemini_tools
+            tools=gemini_tools,
+            session_resumption=resumption,
+            # Compresión de ventana de contexto para sesiones largas
+            context_window_compression=types.ContextWindowCompressionConfig(
+                trigger_tokens=100000,
+                sliding_window=types.SlidingWindow(target_tokens=40000)
+            ),
         )
 
+        if self.affective_dialog:
+            config.enable_affective_dialog = True
+
+        if self.server_vad:
+            # VAD en el servidor: detección de inicio/fin de habla y barge-in nativos.
+            config.realtime_input_config = types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    disabled=False,
+                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
+                    silence_duration_ms=600,
+                    prefix_padding_ms=300,
+                ),
+                activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
+                turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
+            )
+
         async with self.client.aio.live.connect(model=self.model_name, config=config) as native_session:
-            yield GeminiSession(native_session)
+            yield GeminiSession(native_session, on_session_handle=self._save_session_handle)

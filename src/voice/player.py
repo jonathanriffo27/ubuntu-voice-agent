@@ -12,7 +12,9 @@ def play_sound(sound_type: str):
         "ready": "/usr/share/sounds/freedesktop/stereo/service-login.oga",
         "pause": "/usr/share/sounds/freedesktop/stereo/device-removed.oga",
         "resume": "/usr/share/sounds/freedesktop/stereo/device-added.oga",
-        "processing": "/usr/share/sounds/freedesktop/stereo/audio-volume-change.oga"
+        "processing": "/usr/share/sounds/freedesktop/stereo/audio-volume-change.oga",
+        "wake_detected": "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga",
+        "sleep": "/usr/share/sounds/freedesktop/stereo/service-logout.oga"
     }
     if sound_type in sounds:
         try:

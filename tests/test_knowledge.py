@@ -82,3 +82,33 @@ class TestKnowledgeManager:
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
+
+    @pytest.mark.asyncio
+    async def test_buscar_en_memoria_tool(self):
+        from src.plugins.knowledge.tools import BuscarEnMemoriaTool
+        from src.tools.base import ToolContext
+        from src.config.models import AtlasConfig
+        mgr, tmp = self._make_manager()
+        try:
+            mgr.save_note("El servidor de pruebas corre en el puerto 9000")
+            mgr.save_profile("mascota", "perro husky")
+            tool = BuscarEnMemoriaTool(manager=mgr)
+            ctx = ToolContext(config=AtlasConfig())
+
+            # Búsqueda existente
+            res = await tool.execute(ctx, consulta="servidor puerto")
+            assert res.success is True
+            assert "9000" in res.content
+
+            # Búsqueda vacía
+            res_vacio = await tool.execute(ctx, consulta="")
+            assert res_vacio.success is False
+
+            # Búsqueda sin coincidencia
+            res_no = await tool.execute(ctx, consulta="astronomía telescopio")
+            assert res_no.success is True
+            assert "No encontré" in res_no.content
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+

@@ -119,6 +119,14 @@ document.addEventListener('DOMContentLoaded', () => {
             hideHITLBanner();
         } else if (type === 'TaskDelegated') {
             appendToolEvent('SUBAGENT', `🤖 [${data.task_id}] ${data.instruction}`);
+        } else if (type === 'WakeWordDetected') {
+            const conf = Math.round((data.confidence || 0) * 100);
+            appendMessage(`🔔 Wake Word '${data.wake_word}' detectado (${conf}%)`, false);
+            pulseIndicator.textContent = '● Escuchando';
+            waveContainer.classList.add('active');
+        } else if (type === 'WakeWordStandby') {
+            pulseIndicator.textContent = '💤 En Espera';
+            waveContainer.classList.remove('active');
         }
     }
 

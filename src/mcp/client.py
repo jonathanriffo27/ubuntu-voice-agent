@@ -31,6 +31,7 @@ class MCPClient:
         self._request_id = 0
         self._pending_requests: Dict[int, asyncio.Future] = {}
         self._reader_task: Optional[asyncio.Task] = None
+        self._stderr_task: Optional[asyncio.Task] = None
         self._is_running = False
 
     async def start(self) -> None:
@@ -51,7 +52,7 @@ class MCPClient:
             )
             self._is_running = True
             self._reader_task = asyncio.create_task(self._read_stdout())
-            asyncio.create_task(self._read_stderr())
+            self._stderr_task = asyncio.create_task(self._read_stderr())
 
             # Realizar Handshake de inicialización MCP
             await self._initialize()
@@ -117,7 +118,12 @@ class MCPClient:
         self._process.stdin.write(msg_bytes)
         await self._process.stdin.drain()
 
-        return await asyncio.wait_for(future, timeout=30.0)
+        try:
+            return await asyncio.wait_for(future, timeout=30.0)
+        finally:
+            # Evitar fuga de memoria: si hubo timeout, la respuesta tardía del
+            # servidor se ignora limpiamente en lugar de quedar en el dict.
+            self._pending_requests.pop(req_id, None)
 
     async def send_notification(self, method: str, params: Optional[Dict[str, Any]] = None) -> None:
         """Envía una notificación JSON-RPC (sin esperar respuesta)."""
@@ -163,6 +169,8 @@ class MCPClient:
         self._is_running = False
         if self._reader_task and not self._reader_task.done():
             self._reader_task.cancel()
+        if self._stderr_task and not self._stderr_task.done():
+            self._stderr_task.cancel()
 
         for req_id, future in list(self._pending_requests.items()):
             if not future.done():

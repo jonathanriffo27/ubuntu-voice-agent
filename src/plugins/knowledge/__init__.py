@@ -1,5 +1,5 @@
 from src.tools.registry import ToolRegistry
-from .tools import GuardarNotaTool, BorrarNotaTool, GuardarPerfilTool
+from .tools import GuardarNotaTool, BorrarNotaTool, GuardarPerfilTool, BuscarEnMemoriaTool
 
 def setup(registry: ToolRegistry, dependencies: dict):
     manager = dependencies.get("knowledge_manager")
@@ -7,3 +7,5 @@ def setup(registry: ToolRegistry, dependencies: dict):
         registry.register(GuardarNotaTool(manager=manager))
         registry.register(BorrarNotaTool(manager=manager))
         registry.register(GuardarPerfilTool(manager=manager))
+        registry.register(BuscarEnMemoriaTool(manager=manager))
+

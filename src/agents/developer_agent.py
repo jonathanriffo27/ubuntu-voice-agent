@@ -1,5 +1,6 @@
 import asyncio
 import json
+import traceback
 import uuid
 from typing import Dict, Any, List, Optional
 from src.agents.client import CLIProxyClient
@@ -22,7 +23,39 @@ REGLAS DE DESARROLLO DE ATLAS:
 4. Siempre que crees o edites código, corre 'ejecutar_pruebas_pytest' para asegurar que la suite pase al 100%.
 5. Cuando termines satisfactoriamente, llama a 'recargar_plugins_atlas' para que Atlas tenga las nuevas herramientas disponibles en caliente sin reiniciar.
 6. Responde de forma clara y estructurada en español resumiendo lo que lograste.
+
+REGLAS CRÍTICAS DE ENTORNO:
+7. SIEMPRE usa el virtualenv del proyecto para instalar paquetes y ejecutar scripts:
+   - Para instalar: './venv/bin/pip install <paquete>'
+   - Para ejecutar: './venv/bin/python <script.py>'
+   - NUNCA uses 'pip install' ni 'python' directamente (el sistema usa PEP 668 y fallará con 'externally-managed-environment').
+
+REGLAS DE EJECUCIÓN COMPLETA (OBLIGATORIAS):
+8. Completa las tareas de PRINCIPIO A FIN. El flujo esperado para una tarea es:
+   a) Instalar dependencias necesarias con './venv/bin/pip install ...'
+   b) Crear el script o plugin con 'escribir_archivo'
+   c) EJECUTAR el script con 'ejecutar_comando_desarrollo' para que la acción se complete
+   d) Reportar el resultado de la ejecución (éxito o error concreto)
+9. NUNCA termines diciendo "preparé el entorno" o "puedes ejecutar el script manualmente".
+   El usuario espera que HAGAS la tarea, no que le digas cómo hacerla.
+10. Si la ejecución falla (ej: falta una variable de entorno, falta un token), reporta
+    el ERROR EXACTO para que el usuario sepa qué debe configurar. Ejemplo:
+    "Intenté enviar el mensaje pero falló: falta la variable TELEGRAM_API_ID.
+     Configúrala con: export TELEGRAM_API_ID=tu_id"
+11. Puedes verificar variables de entorno con: ejecutar_comando_desarrollo('echo $NOMBRE_VAR')
+
+REGLAS DE DISEÑO PRAGMÁTICO (APP-FIRST Y NATIVO EN LINUX):
+12. FILOSOFÍA CERO-FRICCIÓN (NO REINVENTAR LA RUEDA CON APIs COMPLEJAS):
+    Antes de buscar librerías o APIs externas que requieran registro de claves (API IDs, hashes, tokens de desarrollador, bots, OAuth, client_secrets):
+    - PRIORIZA SIEMPRE las aplicaciones, herramientas y mecanismos que el usuario YA TIENE instalados y funcionando en su sistema Linux:
+      * Comandos CLI nativos ('playerctl', 'pamixer', 'pactl', 'nmcli', 'bluetoothctl', 'brightnessctl', 'xdg-open', etc.).
+      * Interfaz D-Bus del sistema o de la app (ej: 'org.mpris.MediaPlayer2' para Spotify/VLC, 'org.freedesktop.Notifications', etc.).
+      * Automatización de escritorio / GUI en Wayland: usar tecla Super (125) para enfocar la app, atajos de teclado con 'ydotool', 'wl-copy' para el portapapeles y schemes 'xdg-open'.
+    - Si el usuario pide interactuar con una app (Telegram, Spotify, WhatsApp Web, Obsidian, navegador, reproductor, terminal), usa la app local antes de intentar crear clientes de API o scrapers.
+    - Las soluciones deben funcionar DE INMEDIATO para el usuario sin pedirle configurar tokens ni API keys adicionales.
 """
+
+
 
 
 class DeveloperAgent:
@@ -53,6 +86,40 @@ class DeveloperAgent:
         task = asyncio.create_task(self.run_task(instruction, task_id=task_id))
         self._active_tasks[task_id] = task
         return task_id
+
+    def get_task_status(self, task_id: str = None) -> dict:
+        """
+        Devuelve el estado real de una tarea en segundo plano.
+        Si no se pasa task_id, devuelve el estado de todas las tareas activas.
+        """
+        if task_id:
+            task = self._active_tasks.get(task_id)
+            if not task:
+                return {"task_id": task_id, "status": "not_found", "detail": "No existe tarea activa con ese ID."}
+            if task.done():
+                try:
+                    result = task.result()
+                    return {"task_id": task_id, "status": "completed", "detail": str(result)[:500]}
+                except Exception as e:
+                    return {"task_id": task_id, "status": "error", "detail": str(e)[:500]}
+            else:
+                return {"task_id": task_id, "status": "running", "detail": "La tarea sigue ejecutándose."}
+
+        # Sin task_id: devolver resumen de todas
+        if not self._active_tasks:
+            return {"status": "no_tasks", "detail": "No hay tareas activas en segundo plano."}
+
+        result = {}
+        for tid, task in self._active_tasks.items():
+            if task.done():
+                try:
+                    res = task.result()
+                    result[tid] = {"status": "completed", "detail": str(res)[:200]}
+                except Exception as e:
+                    result[tid] = {"status": "error", "detail": str(e)[:200]}
+            else:
+                result[tid] = {"status": "running"}
+        return result
 
     async def run_task(self, instruction: str, task_id: Optional[str] = None) -> str:
         """Bucle autónomo ReAct para resolver la instrucción."""
@@ -129,13 +196,23 @@ class DeveloperAgent:
                         fn_args = {}
 
                     logger.info(f"🔧 [Subagente Tool Call]: {fn_name}({fn_args})")
-                    tool_output = await self.tools.execute_tool(fn_name, fn_args)
+                    tool_output = str(await self.tools.execute_tool(fn_name, fn_args))
+
+                    # Truncar outputs gigantes: un 'cat' de un archivo grande o un
+                    # pytest verboso puede inflar el contexto por iteración (costo/latencia)
+                    MAX_TOOL_OUTPUT_CHARS = 8000
+                    if len(tool_output) > MAX_TOOL_OUTPUT_CHARS:
+                        tool_output = (
+                            tool_output[:MAX_TOOL_OUTPUT_CHARS]
+                            + f"\n\n[... salida truncada: {len(tool_output)} caracteres totales. "
+                            "Usa comandos más específicos (grep, head, rangos) si necesitas más detalle.]"
+                        )
 
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.get("id", str(uuid.uuid4())),
                         "name": fn_name,
-                        "content": str(tool_output)
+                        "content": tool_output
                     })
 
             # Excedió límite de iteraciones
@@ -151,16 +228,35 @@ class DeveloperAgent:
             return timeout_msg
 
         except Exception as e:
-            err_str = str(e)
-            if "connection" in err_str.lower() or "connect" in err_str.lower() or "failed" in err_str.lower():
+            err_type = type(e).__name__
+            err_str = str(e) or repr(e)
+            tb = traceback.format_exc()
+
+            # Diagnóstico específico por tipo de error
+            if "connection" in err_str.lower() or "connect" in err_str.lower():
                 err_msg = (
                     f"No se pudo conectar con CLIProxyAPI en {getattr(self.client, 'base_url', '127.0.0.1:8317')}. "
                     "Por favor inicia el servicio del túnel con: 'systemctl --user start cliproxy-tunnel'"
                 )
+            elif "timeout" in err_str.lower() or "Timeout" in err_type:
+                err_msg = (
+                    f"Timeout al comunicarse con CLIProxyAPI ({err_type}). "
+                    "El modelo puede estar tardando demasiado. Intenta simplificar la instrucción."
+                )
+            elif "HTTPStatusError" in err_type or "status" in err_str.lower():
+                # Intentar extraer body de respuesta HTTP si existe
+                response_text = ""
+                if hasattr(e, "response"):
+                    try:
+                        response_text = f" | Response: {e.response.text[:500]}"
+                    except Exception:
+                        pass
+                err_msg = f"Error HTTP de CLIProxy ({err_type}): {err_str}{response_text}"
             else:
-                err_msg = f"Error: {err_str}"
+                err_msg = f"Error ({err_type}): {err_str}"
 
             logger.error(f"Error en subagente desarrollador [{task_id}]: {err_msg}")
+            logger.debug(f"Traceback completo subagente [{task_id}]:\n{tb}")
             self.event_bus.publish(
                 TaskCompleted(
                     ConversationContext(),

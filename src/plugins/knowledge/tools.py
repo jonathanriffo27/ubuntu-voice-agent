@@ -126,3 +126,56 @@ class GuardarPerfilTool(BaseTool):
                 details=f"Perfil '{campo}' actualizado a '{valor}'."
             ))
         return ToolResult(success=True, content=f"Perfil actualizado: {campo} = {valor}")
+
+
+class BuscarEnMemoriaTool(BaseTool):
+    """
+    Permite consultar la memoria semántica (notas y perfil) mediante búsqueda vectorial local.
+    """
+
+    def __init__(self, manager: KnowledgeManager):
+        self.manager = manager
+
+    @property
+    def name(self) -> str:
+        return "buscar_en_memoria"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Busca de forma semántica y por relevancia en las notas guardadas y en los datos de perfil del usuario. "
+            "Úsalo cuando el usuario pregunte qué notas tienes, qué sabes sobre él, o pida recuperar información previa."
+        )
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "OBJECT",
+            "properties": {
+                "consulta": {
+                    "type": "STRING",
+                    "description": "La consulta, concepto o término a buscar en la memoria (ej: 'servidor ubuntu', 'mascota', 'reunión')."
+                }
+            },
+            "required": ["consulta"]
+        }
+
+    async def execute(self, context: ToolContext, **kwargs) -> ToolResult:
+        if not context.config.memory.enabled:
+            return ToolResult(success=False, content="El subsistema de memoria está deshabilitado.")
+
+        consulta = kwargs.get("consulta") or kwargs.get("query") or ""
+        consulta = consulta.strip()
+        if not consulta:
+            return ToolResult(success=False, content="Falta la consulta de búsqueda.")
+
+        results = self.manager.search(consulta)
+        if not results:
+            return ToolResult(success=True, content=f"No encontré notas ni datos de perfil que coincidan con '{consulta}'.")
+
+        lines = [f"Resultados encontrados en memoria para '{consulta}':"]
+        for r in results:
+            lines.append(f"- {r}")
+
+        return ToolResult(success=True, content="\n".join(lines))
+

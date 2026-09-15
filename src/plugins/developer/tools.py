@@ -92,19 +92,39 @@ class AprobarAccionTool(BaseTool):
         else:
             aprobar = bool(val)
         req_id = kwargs.get("request_id")
+        estado = "aprobada" if aprobar else "rechazada"
 
+        # 1. Si se proporcionó un request_id, intentar resolverlo directamente
         if req_id:
             ok = self.approval_manager.resolve(req_id, aprobar, resolver="voice")
             if ok:
-                estado = "aprobada" if aprobar else "rechazada"
                 return ToolResult(success=True, content=f"Solicitud {req_id} ha sido {estado}.")
-            return ToolResult(success=False, content=f"No se encontró solicitud pendiente con ID {req_id}.")
-        else:
-            resolved_id = self.approval_manager.resolve_latest(aprobar, resolver="voice")
-            if resolved_id:
-                estado = "aprobada" if aprobar else "rechazada"
-                return ToolResult(success=True, content=f"La acción pendiente [{resolved_id}] ha sido {estado}.")
-            return ToolResult(success=False, content="No hay ninguna solicitud de confirmación pendiente en este momento.")
+            # 2. El ID proporcionado no coincide: NUNCA resolver otra solicitud a
+            #    ciegas (riesgo de aprobar algo distinto a lo que el usuario quiso).
+            #    Devolver los IDs pendientes para que el modelo rectifique.
+            pending = self.approval_manager.list_pending()
+            if pending:
+                detalle = "\n".join(
+                    f"- [{r.id}] ({r.action_type}) {r.description}" for r in pending
+                )
+                return ToolResult(
+                    success=False,
+                    content=(
+                        f"El ID '{req_id}' no corresponde a ninguna solicitud pendiente. "
+                        f"NO se resolvió nada. Solicitudes pendientes:\n{detalle}\n"
+                        f"Vuelve a llamar a esta herramienta con el request_id correcto."
+                    )
+                )
+            return ToolResult(
+                success=False,
+                content=f"No se encontró solicitud pendiente con ID {req_id} ni hay otras solicitudes pendientes."
+            )
+
+        # 3. Sin request_id: resolver la más reciente directamente
+        resolved_id = self.approval_manager.resolve_latest(aprobar, resolver="voice")
+        if resolved_id:
+            return ToolResult(success=True, content=f"La acción pendiente [{resolved_id}] ha sido {estado}.")
+        return ToolResult(success=False, content="No hay ninguna solicitud de confirmación pendiente en este momento.")
 
 
 class RecargarPluginsTool(BaseTool):
@@ -130,3 +150,73 @@ class RecargarPluginsTool(BaseTool):
             count = self.reload_callback()
             return ToolResult(success=True, content=f"Plugins recargados exitosamente. {count} herramientas activas en memoria.")
         return ToolResult(success=True, content="Plugins recargados.")
+
+
+class ConsultarEstadoTareaTool(BaseTool):
+    """
+    Permite consultar el estado real de tareas delegadas al subagente de desarrollo
+    y de solicitudes de aprobación HITL pendientes.
+    Evita que Atlas invente o alucine el progreso de tareas en segundo plano.
+    """
+
+    def __init__(self, developer_agent: DeveloperAgent, approval_manager: ApprovalManager):
+        self.developer_agent = developer_agent
+        self.approval_manager = approval_manager
+
+    @property
+    def name(self) -> str:
+        return "consultar_estado_tarea"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Consulta el estado REAL de las tareas de desarrollo en segundo plano y las solicitudes de aprobación pendientes. "
+            "OBLIGATORIO usarlo SIEMPRE que el usuario pregunte por el avance, estado o progreso de una tarea delegada. "
+            "NUNCA respondas sobre el estado de una tarea sin antes usar esta herramienta."
+        )
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "OBJECT",
+            "properties": {
+                "task_id": {
+                    "type": "STRING",
+                    "description": "ID de la tarea a consultar (opcional; si no se indica, devuelve todas las activas)."
+                }
+            }
+        }
+
+    async def execute(self, context: ToolContext, **kwargs) -> ToolResult:
+        import json
+        task_id = kwargs.get("task_id")
+
+        # Estado de las tareas del subagente
+        task_status = self.developer_agent.get_task_status(task_id)
+
+        # Estado de las aprobaciones HITL pendientes
+        pending_approvals = self.approval_manager.list_pending()
+        approvals_info = []
+        for req in pending_approvals:
+            import time
+            elapsed = time.time() - req.created_at
+            approvals_info.append({
+                "request_id": req.id,
+                "action_type": req.action_type,
+                "description": req.description,
+                "status": req.status,
+                "elapsed_seconds": round(elapsed, 1),
+                "timeout_seconds": req.timeout_seconds,
+                "remaining_seconds": round(max(0, req.timeout_seconds - elapsed), 1)
+            })
+
+        result = {
+            "tareas_subagente": task_status,
+            "aprobaciones_pendientes": approvals_info if approvals_info else "Ninguna",
+            "nota": (
+                "Si hay aprobaciones pendientes, la tarea del subagente está BLOQUEADA "
+                "esperando que el usuario apruebe. Infórmale al usuario que debe aprobar la acción."
+            ) if approvals_info else "No hay bloqueos. Si la tarea está 'running', sigue trabajando normalmente."
+        }
+
+        return ToolResult(success=True, content=json.dumps(result, ensure_ascii=False, indent=2))

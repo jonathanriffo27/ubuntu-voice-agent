@@ -50,6 +50,11 @@ class TrajectoryManager:
         self.file_path = file_path
         self.max_steps = max_steps
         self._steps: List[TrajectoryStep] = []
+        # Throttle de escritura a disco: los eventos llegan en ráfagas (streaming
+        # de texto, audio, tools) y escribir en cada uno congela el event loop.
+        self._save_interval: float = 2.0
+        self._last_save_time: float = 0.0
+        self._pending_save: bool = False
         self._load()
 
         if self.event_bus:
@@ -106,7 +111,15 @@ class TrajectoryManager:
         self._steps.append(step)
         if len(self._steps) > self.max_steps:
             self._steps = self._steps[-self.max_steps:]
-        self._save()
+
+        # Guardado con throttle: como máximo una escritura a disco cada _save_interval
+        now = time.time()
+        if now - self._last_save_time >= self._save_interval:
+            self._save()
+            self._last_save_time = now
+            self._pending_save = False
+        else:
+            self._pending_save = True
         return step
 
     def _on_event(self, event: Event) -> None:
@@ -179,6 +192,11 @@ class TrajectoryManager:
                 )
         except Exception as e:
             logger.debug(f"Error procesando evento en TrajectoryManager: {e}")
+        finally:
+            # Flush garantizado al cerrar la sesión para no perder los últimos eventos
+            if isinstance(event, SessionEnded) and self._pending_save:
+                self._save()
+                self._pending_save = False
 
     def get_steps(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Devuelve los pasos más recientes en formato serializable."""

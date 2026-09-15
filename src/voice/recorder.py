@@ -3,61 +3,96 @@ import math
 import struct
 import sys
 import time
-import warnings
+from enum import Enum, auto
+from typing import Optional
+
 from src.voice.constants import AUDIO_IN_RATE, CHUNK_SIZE
-from src.events.base import ConversationContext, VoiceListeningStarted, VoiceListeningStopped, SpeechRecognized, ModelThinkingStarted
+from src.events.base import (
+    ConversationContext, VoiceListeningStarted, VoiceListeningStopped,
+    SpeechRecognized, ModelThinkingStarted, WakeWordDetected, WakeWordStandby
+)
 from src.events.bus import EventBus
 from src.voice.player import play_sound
 from src.voice.vad import VoiceActivityDetector
+from src.voice.wake_word import WakeWordDetector
 from src.utils.logging import get_logger
 
 logger = get_logger("voice.recorder")
 
 
-class AudioRecorder:
-    """Maneja la captura de micrófono y la detección inteligente de actividad de voz (VAD)."""
+class RecorderState(Enum):
+    STANDBY = auto()    # Escucha local de wake word, 0 envío a Gemini Live
+    ACTIVE = auto()     # Streaming activo a Gemini Live
+    FOLLOW_UP = auto()  # Ventana post-respuesta esperando repregunta
+    MUTED = auto()      # Silenciado manualmente (Tab / Mute)
 
-    def __init__(self, in_stream, event_bus: EventBus, conversation_context: ConversationContext):
+
+class AudioRecorder:
+    """Maneja la captura de micrófono, VAD y la máquina de estados de activación por voz."""
+
+    def __init__(
+        self,
+        in_stream,
+        event_bus: EventBus,
+        conversation_context: ConversationContext,
+        voice_config=None
+    ):
         self.in_stream = in_stream
         self.event_bus = event_bus
         self.conversation_context = conversation_context
+        self._voice_config = voice_config
 
         self.silence_threshold: int | None = None
-        self.is_paused = False
         self.processing_tool = False
+        self.waiting_for_model = False
         self.vad = VoiceActivityDetector(sample_rate=AUDIO_IN_RATE)
 
-        # Modelo Wake Word (se carga en segundo plano)
-        self.oww_model = None
-        self.np = None
+        # Estado inicial según configuración
+        mode = getattr(voice_config, 'mode', 'always_on') if voice_config else 'always_on'
+        self._state = RecorderState.STANDBY if mode == 'wake_word' else RecorderState.ACTIVE
 
-    def _load_wake_word_sync(self):
-        """Carga el modelo openwakeword para 'Hey Atlas' de forma síncrona en hilo worker."""
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", category=UserWarning)
-                import openwakeword
-                from openwakeword.model import Model
-                import numpy as np
-                self.np = np
-                model_paths = [p for p in openwakeword.get_pretrained_model_paths() if 'hey_jarvis' in p]
-                self.oww_model = Model(wakeword_model_paths=model_paths)
-        except ImportError:
-            logger.error("openwakeword o numpy no están instalados.")
+        self._follow_up_last_active: float = 0.0
+        self._active_started: float = 0.0
+        self.wake_detector = WakeWordDetector()
 
-    async def load_wake_word(self):
-        """Carga el modelo openwakeword en segundo plano sin bloquear el loop de eventos."""
-        await asyncio.to_thread(self._load_wake_word_sync)
+    @property
+    def is_paused(self) -> bool:
+        """Propiedad de compatibilidad con UI y atajos existentes."""
+        return self._state == RecorderState.MUTED
+
+    @is_paused.setter
+    def is_paused(self, value: bool):
+        if value:
+            self._state = RecorderState.MUTED
+        else:
+            mode = getattr(self._voice_config, 'mode', 'always_on') if self._voice_config else 'always_on'
+            self._state = RecorderState.STANDBY if mode == 'wake_word' else RecorderState.ACTIVE
+
+    @property
+    def state(self) -> RecorderState:
+        return self._state
+
+    async def load_wake_word(self, wake_word: Optional[str] = None):
+        """Carga el modelo de wake word en background sin bloquear el event loop."""
+        ww = wake_word or (getattr(self._voice_config, 'wake_word', 'hey_jarvis') if self._voice_config else 'hey_jarvis')
+        await asyncio.to_thread(self.wake_detector.load_sync, ww)
+
+    def enter_follow_up(self):
+        """Inicia la ventana de follow-up post-respuesta de Gemini."""
+        self.waiting_for_model = False
+        mode = getattr(self._voice_config, 'mode', 'always_on') if self._voice_config else 'always_on'
+        if mode == 'wake_word' and self._state != RecorderState.MUTED:
+            self._state = RecorderState.FOLLOW_UP
+            self._follow_up_last_active = time.time()
 
     async def calibrate(self, max_drain_frames: int = 25, sample_frames: int = 15) -> int:
         """
         Calibra dinámicamente el umbral de silencio según el ruido ambiental real:
-        1. Drena de forma adaptativa los transitorios de hardware de ALSA/AGC hasta que la señal se estabilice (< 5000 RMS).
+        1. Drena de forma adaptativa los transitorios de hardware de ALSA/AGC (< 5000 RMS).
         2. Muestrea 15 frames limpios de ruido ambiente real.
-        3. Usa el percentil 25 para capturar el piso de ruido real de la habitación sin sesgo por ruidos.
-        4. Calcula un umbral óptimo de voz (1.7x ruido base + 350) con clamp seguro entre 1200 y 3500 RMS.
+        3. Usa el percentil 25 para capturar el piso de ruido real.
+        4. Calcula un umbral óptimo de voz con clamp seguro entre 1200 y 3500 RMS.
         """
-        # 1. Drenaje adaptativo de transitorios de hardware
         for _ in range(max_drain_frames):
             data = await asyncio.to_thread(self.in_stream.read, CHUNK_SIZE, exception_on_overflow=False)
             shorts = struct.unpack('h' * (len(data) // 2), data)
@@ -66,7 +101,6 @@ class AudioRecorder:
                 if rms < 5000:
                     break
 
-        # 2. Muestreo de ruido ambiente estabilizado
         samples = []
         for _ in range(sample_frames):
             data = await asyncio.to_thread(self.in_stream.read, CHUNK_SIZE, exception_on_overflow=False)
@@ -79,12 +113,10 @@ class AudioRecorder:
             self.silence_threshold = 2200
             return 2200
 
-        # 3. Percentil 25 del piso de ruido ambiental
         samples.sort()
         p25_index = max(0, len(samples) // 4)
         noise_floor = samples[p25_index]
 
-        # 4. Umbral de voz adaptado (1.7x ruido base + 350)
         threshold = int(noise_floor * 1.7 + 350)
         clamped_threshold = min(3500, max(1200, threshold))
         self.silence_threshold = clamped_threshold
@@ -92,15 +124,21 @@ class AudioRecorder:
         if hasattr(self, 'vad') and self.vad:
             self.vad._noise_energy = noise_floor
 
-        logger.info(f"Micrófono calibrado (piso de ruido real: {int(noise_floor)} RMS) -> Umbral VAD: {clamped_threshold}")
+        logger.info(f"Micrófono calibrado (piso de ruido: {int(noise_floor)} RMS) -> Umbral VAD: {clamped_threshold}")
         return clamped_threshold
 
     async def listen(self, audio_queue_input: asyncio.Queue, audio_queue_output: asyncio.Queue, player=None):
-        """Bucle principal de escucha con VAD inteligente, wake word y aislamiento de eco acústico."""
+        """Bucle principal de escucha con máquina de estados de activación por voz y VAD."""
         silence_frames = 0
         frames_per_second = AUDIO_IN_RATE / CHUNK_SIZE
         max_silence_seconds = 0.9
         user_spoke = False
+
+        follow_up_timeout = float(getattr(self._voice_config, 'follow_up_timeout', 7.0)) if self._voice_config else 7.0
+        activation_sound = bool(getattr(self._voice_config, 'activation_sound', True)) if self._voice_config else True
+        # Si el VAD server-side está activo, el servidor decide el fin de turno:
+        # no enviamos la señal local END_OF_TURN para evitar turnos duplicados.
+        server_vad = bool(getattr(self._voice_config, 'server_vad', False)) if self._voice_config else False
 
         while True:
             try:
@@ -109,32 +147,70 @@ class AudioRecorder:
 
                 data = await asyncio.to_thread(self.in_stream.read, CHUNK_SIZE, exception_on_overflow=False)
 
-                # Detección de Wake Word si está pausado
-                if self.is_paused:
-                    if self.oww_model and self.np is not None:
-                        audio_np = self.np.frombuffer(data, dtype=self.np.int16)
-                        prediction = self.oww_model.predict(audio_np)
-                        max_score = max(prediction.values()) if prediction else 0
-                        if max_score > 0.5:
-                            self.is_paused = False
-                            play_sound("resume")
-                            print(f"\r[REANUDADO ▶️] - ¡'Hey Atlas' detectado! Micrófono activado.      \n", end='', flush=True)
+                # Umbral dinámico configurable en tiempo real
+                ww_threshold = float(getattr(self._voice_config, 'wake_word_threshold', 0.35)) if self._voice_config else 0.35
+
+                # 1. Estado MUTED: silenciado total
+                if self._state == RecorderState.MUTED:
                     await asyncio.sleep(0.001)
                     continue
 
-                if not self.processing_tool:
-                    is_speaking = player.is_speaking if player else False
-                    time_since_speech = time.time() - getattr(player, 'last_speech_time', 0.0) if player else 999.0
+                # 2. Estado STANDBY: solo detección local de wake word (0 tráfico a Gemini)
+                if self._state == RecorderState.STANDBY:
+                    detected, name, score = self.wake_detector.predict(data, threshold=ww_threshold)
+                    if detected:
+                        self.wake_detector.reset()
+                        self._state = RecorderState.ACTIVE
+                        self._active_started = time.time()
+                        self.waiting_for_model = False
+                        user_spoke = False
+                        silence_frames = 0
+                        if activation_sound:
+                            play_sound("wake_detected")
+                        self.event_bus.publish(WakeWordDetected(
+                            self.conversation_context, wake_word=name, confidence=score
+                        ))
+                    await asyncio.sleep(0.001)
+                    continue
 
-                    # 1. Aislamiento de Eco Acústico y Reverberación (Half-Duplex seguro):
-                    # Mientras Atlas emite audio por los parlantes o en los 350ms posteriores (cola de eco),
-                    # se descartan los paquetes de micrófono para evitar que Atlas se escuche a sí mismo y se auto-interrumpa
-                    if is_speaking or time_since_speech < 0.35:
+                # 3. Timeout en estado ACTIVE si el usuario no inicia ninguna consulta
+                if self._state == RecorderState.ACTIVE and not user_spoke and not self.waiting_for_model:
+                    if (time.time() - getattr(self, '_active_started', 0.0)) > follow_up_timeout:
+                        self._state = RecorderState.STANDBY
+                        play_sound("sleep")
+                        self.event_bus.publish(WakeWordStandby(self.conversation_context))
                         silence_frames = 0
                         user_spoke = False
                         continue
 
-                    # 2. Captura activa de voz de usuario en silencio
+                # 4. Estado FOLLOW_UP: ventana de espera tras respuesta de Atlas
+                if self._state == RecorderState.FOLLOW_UP:
+                    elapsed = time.time() - self._follow_up_last_active
+                    if elapsed > follow_up_timeout:
+                        self._state = RecorderState.STANDBY
+                        play_sound("sleep")
+                        self.event_bus.publish(WakeWordStandby(self.conversation_context))
+                        silence_frames = 0
+                        user_spoke = False
+                        continue
+                    # Si no ha expirado, continúa al flujo de captura activa
+
+                # 5. Estados ACTIVE y FOLLOW_UP: captura y streaming hacia Gemini Live
+                if not self.processing_tool and not self.waiting_for_model:
+                    is_speaking = player.is_speaking if player else False
+                    time_since_speech = time.time() - getattr(player, 'last_speech_time', 0.0) if player else 999.0
+
+                    # Aislamiento de Eco Acústico (Half-Duplex seguro):
+                    # Mientras Atlas habla o en los 350ms posteriores, mantener vivo el temporizador
+                    # para que la ventana de 7 segundos empiece estrictamente al terminar de hablar Atlas
+                    if is_speaking or time_since_speech < 0.35:
+                        silence_frames = 0
+                        user_spoke = False
+                        self._follow_up_last_active = time.time()
+                        self._active_started = time.time()
+                        continue
+
+                    # Captura activa de voz con VAD
                     is_voice = self.vad.is_speech(data, current_threshold=self.silence_threshold)
                     await audio_queue_input.put(data)
 
@@ -146,8 +222,12 @@ class AudioRecorder:
                         if not user_spoke:
                             self.event_bus.publish(VoiceListeningStarted(self.conversation_context))
                         user_spoke = True
+                        # Si el usuario habló durante follow-up, regresar de inmediato a ACTIVE
+                        if self._state == RecorderState.FOLLOW_UP:
+                            self._state = RecorderState.ACTIVE
 
-                    if user_spoke and silence_frames > (frames_per_second * max_silence_seconds):
+                    # Detección de fin de turno por silencio sostenido (solo con VAD local)
+                    if not server_vad and user_spoke and silence_frames > (frames_per_second * max_silence_seconds):
                         await audio_queue_input.put("END_OF_TURN")
                         self.event_bus.publish(VoiceListeningStopped(self.conversation_context))
                         self.event_bus.publish(SpeechRecognized(self.conversation_context, text="[Audio enviado]"))
@@ -155,9 +235,11 @@ class AudioRecorder:
                         play_sound("processing")
                         silence_frames = 0
                         user_spoke = False
+                        self.waiting_for_model = True
                 else:
                     silence_frames = 0
                     user_spoke = False
+
 
                 await asyncio.sleep(0)
             except asyncio.CancelledError:

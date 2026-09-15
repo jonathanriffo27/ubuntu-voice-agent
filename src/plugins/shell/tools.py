@@ -1,10 +1,27 @@
 import asyncio
+import os
 import time
 import re
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 
 from src.tools.base import BaseTool, ToolContext, ToolResult
+
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+_VENV_BIN = os.path.join(_PROJECT_ROOT, "venv", "bin")
+
+
+def _rewrite_cmd_to_venv(cmd: str) -> str:
+    """Auto-rewrite pip/python desnudos al venv del proyecto (red de seguridad PEP 668)."""
+    if "venv/" in cmd or "/bin/" in cmd:
+        return cmd
+    rewrites = [
+        (r"^pip3?\b", os.path.join(_VENV_BIN, "pip")),
+        (r"^python3?\b", os.path.join(_VENV_BIN, "python")),
+    ]
+    for pattern, replacement in rewrites:
+        cmd = re.sub(pattern, replacement, cmd)
+    return cmd
 
 class CommandResult:
     def __init__(self, exit_code: int, stdout: str, stderr: str, duration_ms: int):
@@ -94,6 +111,9 @@ class ProponerComandoTool(BaseTool):
     async def execute(self, context: ToolContext, comando: str = None) -> ToolResult:
         if not comando:
             return ToolResult(success=False, content="Falta el comando.")
+
+        # Auto-rewrite: redirigir pip/python desnudos al venv del proyecto
+        comando = _rewrite_cmd_to_venv(comando)
             
         config = context.config.tools.shell
         if not config.enabled:

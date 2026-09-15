@@ -40,7 +40,7 @@ class TavilySearchEngine(BaseSearchEngine):
         }
 
         try:
-            async with httpx.AsyncClient(timeout=12.0) as client:
+            async with httpx.AsyncClient(timeout=8.0) as client:
                 resp = await client.post("https://api.tavily.com/search", json=payload)
                 resp.raise_for_status()
                 data = resp.json()

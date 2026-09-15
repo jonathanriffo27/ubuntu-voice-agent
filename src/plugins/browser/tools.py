@@ -1,3 +1,4 @@
+import asyncio
 from typing import Dict, Any, Optional, Tuple
 from src.tools.base import BaseTool, ToolContext, ToolResult
 from .engines.google_grounding import GoogleGroundingSearchEngine
@@ -23,8 +24,27 @@ class MultiEngineSearchManager:
         self.tavily_engine = TavilySearchEngine()
         self.ddg_engine = DuckDuckGoSearchEngine()
 
+    @staticmethod
+    def _motivo_corto(error: Optional[str]) -> str:
+        """Resume la causa del fallo de un motor en una etiqueta legible para el trail."""
+        if not error:
+            return ""
+        low = error.lower()
+        if "429" in low or "cuota" in low or "exhausted" in low:
+            return "cuota"
+        if "timeout" in low:
+            return "timeout"
+        if "no configurada" in low:
+            return "sin key"
+        return "fallo"
+
     async def search(self, query: str, max_results: int = 4) -> Tuple[Any, str]:
         trail = []
+
+        # 0. Fast-path de clima: wttr.in responde en ~300ms sin consumir cuota de nadie
+        weather_res = await self.ddg_engine.weather_fast_path(query)
+        if weather_res and weather_res.success and weather_res.answer:
+            return weather_res, "CLIMA ✅"
 
         # 1. Intentar Google Grounding
         res = await self.google_engine.search(query, max_results=max_results)
@@ -32,18 +52,23 @@ class MultiEngineSearchManager:
             trail.append("GOOGLE ✅")
             return res, " → ".join(trail)
         else:
-            trail.append("GOOGLE ❌")
+            motivo = self._motivo_corto(getattr(res, "error", None))
+            trail.append(f"GOOGLE ❌({motivo})" if motivo else "GOOGLE ❌")
 
-        # 2. Segundo Fallback: Tavily
-        res_tavily = await self.tavily_engine.search(query, max_results=max_results)
+        # 2. Fallbacks EN PARALELO: Tavily y DuckDuckGo compiten; gana el más rápido
+        #    (antes eran secuenciales y sumaban sus timeouts: hasta ~14s extra).
+        res_tavily, res_ddg = await asyncio.gather(
+            self.tavily_engine.search(query, max_results=max_results),
+            self.ddg_engine.search(query, max_results=max_results)
+        )
+
+        # Prioridad: Tavily (respuesta sintetizada) si logró algo útil
         if res_tavily.success and (res_tavily.answer or res_tavily.results):
             trail.append("TAVILY ✅")
             return res_tavily, " → ".join(trail)
         else:
             trail.append("TAVILY ❌")
 
-        # 3. Tercer Fallback: DuckDuckGo (100% libre sin API keys)
-        res_ddg = await self.ddg_engine.search(query, max_results=max_results)
         if res_ddg.success and res_ddg.results:
             trail.append("DUCKDUCKGO ✅")
             return res_ddg, " → ".join(trail)

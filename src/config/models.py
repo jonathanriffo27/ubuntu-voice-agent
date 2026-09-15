@@ -11,8 +11,14 @@ class ProviderConfig:
 
 @dataclass
 class VoiceConfig:
-    wake_word: str = "atlas"
+    mode: str = "wake_word"  # "wake_word" o "always_on"
+    wake_word: str = "alexa"  # "alexa", "hey_jarvis", "hey_mycroft" o ruta .onnx
+    wake_word_threshold: float = 0.35  # Sensibilidad optimizada para español (0.30 - 0.45)
+    follow_up_timeout: float = 7.0  # Segundos post-respuesta antes de volver a standby
+    activation_sound: bool = True  # Chime al detectar wake word
     language: str = "es-CL"
+    server_vad: bool = False  # True: delega detección de fin de turno al VAD nativo de Gemini
+    affective_dialog: bool = False  # True: voz con entonación afectiva/emocional nativa
 
 
 @dataclass
@@ -48,7 +54,7 @@ class DeveloperAgentConfig:
     enabled: bool = True
     provider: str = "cliproxy"
     base_url: str = "http://127.0.0.1:8317/v1"
-    api_key: str = "YOUR_CLIPROXY_API_KEY"
+    api_key: str = ""  # Debe inyectarse vía variable de entorno CLIPROXY_API_KEY
     model: str = "gemini-3.7-flash-high"
     temperature: float = 0.2
     max_iterations: int = 15

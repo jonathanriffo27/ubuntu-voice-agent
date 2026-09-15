@@ -29,9 +29,16 @@ from src.brain.trajectory import TrajectoryManager
 setup_logging(log_file="latest_session.log")
 logger = get_logger("bootstrap")
 
+# Cargar credenciales desde .env del proyecto (no pisa variables ya exportadas)
+from src.config.loader import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
 API_KEY = os.environ.get("GEMINI_API_KEY")
 if not API_KEY:
-    logger.critical("Debes exportar la variable de entorno GEMINI_API_KEY.")
+    logger.critical(
+        "Debes exportar la variable de entorno GEMINI_API_KEY "
+        "(o definirla en el archivo .env del proyecto)."
+    )
     sys.exit(1)
 
 if __name__ == "__main__":
@@ -107,7 +114,9 @@ if __name__ == "__main__":
     if config.provider.type == "gemini":
         provider = GeminiProvider(
             model_name=config.provider.model,
-            voice_name=config.provider.voice
+            voice_name=config.provider.voice,
+            server_vad=getattr(config.voice, "server_vad", False),
+            affective_dialog=getattr(config.voice, "affective_dialog", False)
         )
     else:
         logger.error(f"Proveedor desconocido en config: {config.provider.type}")

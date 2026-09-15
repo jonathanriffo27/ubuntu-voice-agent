@@ -57,12 +57,13 @@ graph TD
 
 ## ✨ Características Principales
 
-### 1. 🎙️ Frontend de Voz de Ultra Baja Latencia
+### 1. 🎙️ Frontend de Voz de Ultra Baja Latencia & Streaming
 - **Modelo**: `gemini-3.1-flash-live-preview` vía **Google GenAI Multimodal Live API** (WebSocket bidireccional dúplex).
 - **Voz nativa**: Síntesis y reconocimiento End-to-End sin pipelines STT/TTS lentos.
+- **Transcripción y Visualización en Terminal**: Emisión de texto en tiempo real (`output_audio_transcription`) con prefijo `│ 🤖 Atlas: ` en la consola mientras el audio suena por los parlantes.
 - **Detección VAD Multi-Feature**: Filtra ruidos mecánicos y respiración mediante análisis adaptativo de energía RMS, ZCR (Zero-Crossing Rate) y Crest Factor.
 - **Silenciamiento ALSA/PortAudio**: Supresión de errores de bajo nivel en Linux mediante bindings `ctypes`.
-- **Reconexión Resiliente**: Manejo silencioso y reconexión automática en desconexiones transitorias de WebSocket.
+- **Reconexión Resiliente y Transparente**: Recuperación en 0.5s ante desconexiones de inactividad (código 1008), sin repetir el banner de bienvenida ni interrumpir con audios iniciales, preservando el buffer de teclado de la terminal.
 
 ### 2. ⌨️ Interacción por Terminal Avanzada (`TerminalInteractionManager`)
 - **Escritura Libre de Prompts**: Escribe párrafos de texto con auto-wrap nativo sin duplicación.
@@ -137,19 +138,21 @@ graph TD
 │   ├── plugins/                # Plugins modulares
 │   │   ├── browser/            # Smart Search multi-motor, Reader y Deep Research
 │   │   ├── developer/          # Herramientas de voz para delegar tareas y aprobar
+│   │   ├── email/              # Envío de correo Gmail PWA con URL de composición
 │   │   ├── media/              # Control nativo de Spotify vía D-Bus MPRIS
 │   │   ├── office/             # Automatización de documentos OnlyOffice
 │   │   ├── reminders/          # Herramientas de recordatorios y alarmas
 │   │   ├── system/             # Control de aplicaciones de escritorio y sistema
 │   │   ├── knowledge/          # Memoria persistente y notas
-│   │   └── vision/             # Captura y análisis de pantalla
+│   │   ├── vision/             # Captura y análisis de pantalla
+│   │   └── whatsapp/           # Mensajería WhatsApp Web PWA reactiva con AT-SPI2
 │   ├── knowledge/              # Base de conocimiento y búsqueda semántica vectorial
 │   ├── reminders/              # Planificador asíncrono y notificaciones SO
 │   ├── mcp/                    # Cliente y gestor de servidores Model Context Protocol
 │   ├── ui/                     # CLI interactiva, TerminalInput y servidor Web HUD
-│   ├── utils/                  # Logging estructurado y rotativo
+│   ├── utils/                  # Logging estructurado, rotativo y sensor AT-SPI2
 │   └── voice/                  # Captura de audio, VAD inteligente y reproductor PipeWire
-├── tests/                      # Suite de 56 pruebas automatizadas con pytest (100% passing)
+├── tests/                      # Suite de 96 pruebas automatizadas con pytest (100% passing)
 └── debug/                      # Scripts auxiliares de diagnóstico y testing
 ```
 

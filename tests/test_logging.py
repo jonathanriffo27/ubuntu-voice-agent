@@ -5,9 +5,8 @@ from src.utils.logging import setup_logging, get_logger, ColoredFormatter
 
 
 def test_colored_formatter():
-    formatter = ColoredFormatter()
     record = logging.LogRecord(
-        name="test",
+        name="atlas.plugins.browser.google",
         level=logging.INFO,
         pathname="",
         lineno=0,
@@ -15,9 +14,18 @@ def test_colored_formatter():
         args=(),
         exc_info=None
     )
-    formatted = formatter.format(record)
-    assert "INFO" in formatted
-    assert "Test message" in formatted
+
+    # Modo compacto (default): símbolo + módulo corto, sin ruido técnico
+    compact = ColoredFormatter(verbose=False).format(record)
+    assert "Test message" in compact
+    assert "google" in compact          # último componente del logger
+    assert "atlas.plugins" not in compact  # sin la ruta completa del módulo
+
+    # Modo verbose: nivel textual y nombre completo
+    verbose = ColoredFormatter(verbose=True).format(record)
+    assert "INFO" in verbose
+    assert "atlas.plugins.browser.google" in verbose
+    assert "Test message" in verbose
 
 
 def test_setup_logging_and_get_logger():

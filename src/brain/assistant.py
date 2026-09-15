@@ -1,8 +1,10 @@
 import asyncio
 import os
 import sys
+import time
 import traceback
 import contextlib
+
 from typing import List, Optional
 import pyaudio
 
@@ -10,7 +12,7 @@ from src.voice.constants import AUDIO_FORMAT, AUDIO_CHANNELS, AUDIO_IN_RATE, AUD
 from src.voice.recorder import AudioRecorder
 from src.voice.player import AudioPlayer, play_sound
 from src.providers.base import (
-    BaseProvider, ProviderSession, AudioChunk, TextChunk,
+    BaseProvider, ProviderSession, AudioChunk, TextChunk, UserTextChunk,
     ToolCallRequest, Interrupted, TurnComplete, ToolResponseItem
 )
 from src.brain.prompts import build_system_prompt
@@ -19,7 +21,9 @@ from src.tools.base import ToolContext
 from src.knowledge.manager import KnowledgeManager
 from src.events.base import (
     ConversationContext, SessionStarted, SessionEnded, ToolStarted,
-    ToolSucceeded, ToolFailed, ResponseGenerated, ErrorOccurred
+    ToolSucceeded, ToolFailed, ResponseGenerated, AssistantTextChunk,
+    ErrorOccurred, TaskCompleted, TurnCompleted, UserInterrupted,
+    SessionReconnected, SpeechRecognized, SystemNotification, ReminderTriggered
 )
 from src.events.bus import EventBus
 from src.ui.terminal_input import TerminalInteractionManager
@@ -61,7 +65,9 @@ class Assistant:
         self.reconnect_initial_backoff = reconnect_initial_backoff
         self.reconnect_max_backoff = reconnect_max_backoff
 
-        self._last_tool_call = {"name": None, "args": None, "count": 0}
+        # Deduplicación de tool calls DENTRO de un mismo turno (el modelo a veces
+        # repite la misma llamada). Se resetea en cada TurnComplete.
+        self._duplicate_guard: Dict[str, int] = {}
 
         self.p = None
         self.in_stream = None
@@ -87,6 +93,17 @@ class Assistant:
                 logger.error(f"Error en send_realtime: {e}")
                 raise
 
+    def _is_duplicate_call(self, name: str, args: dict) -> bool:
+        """
+        True si esta MISMA llamada (nombre + args) ya se ejecutó en el turno actual.
+        La guardia se limpia en cada TurnComplete, así que llamadas idénticas en
+        turnos distintos son legítimas y se ejecutan con normalidad.
+        """
+        call_key = f"{name}:{args}"
+        count = self._duplicate_guard.get(call_key, 0)
+        self._duplicate_guard[call_key] = count + 1
+        return count > 0
+
     async def receive_and_route(
         self,
         session: ProviderSession,
@@ -95,26 +112,44 @@ class Assistant:
     ):
         """Recibe eventos normalizados del modelo y enruta audio, texto y ejecución de herramientas."""
         printed_prefix = False
+        current_response_text: List[str] = []
         try:
             while True:
                 async for event in session.receive():
                     if isinstance(event, Interrupted):
+                        current_response_text.clear()
                         if self.player:
                             self.player.stop_and_clear(audio_queue_output)
+                        if self.recorder:
+                            self.recorder.waiting_for_model = False
+                        self.event_bus.publish(UserInterrupted(self.conversation_context))
                         printed_prefix = False
 
                     elif isinstance(event, AudioChunk):
                         audio_queue_output.put_nowait(event.data)
 
+                    elif isinstance(event, UserTextChunk):
+                        self.event_bus.publish(SpeechRecognized(self.conversation_context, text=event.text))
+
                     elif isinstance(event, TextChunk):
                         if not printed_prefix:
                             printed_prefix = True
-                        self.event_bus.publish(ResponseGenerated(self.conversation_context, text=event.text))
+                        current_response_text.append(event.text)
+                        self.event_bus.publish(AssistantTextChunk(self.conversation_context, text=event.text))
 
                     elif isinstance(event, TurnComplete):
-                        if printed_prefix:
-                            sys.stdout.write("\n")
-                            printed_prefix = False
+                        full_text = "".join(current_response_text).strip()
+                        if full_text:
+                            self.event_bus.publish(ResponseGenerated(self.conversation_context, text=full_text))
+                        current_response_text.clear()
+                        self.event_bus.publish(TurnCompleted(self.conversation_context))
+                        # Reset de la deduplicación: la misma tool con los mismos args
+                        # en un turno FUTURO es una petición legítima, no un duplicado.
+                        self._duplicate_guard.clear()
+                        if self.recorder:
+                            self.recorder.waiting_for_model = False
+                        printed_prefix = False
+
 
                     elif isinstance(event, ToolCallRequest):
                         if self.recorder:
@@ -122,21 +157,12 @@ class Assistant:
                         responses: List[ToolResponseItem] = []
 
                         for fc in event.calls:
-                            call_key = f"{fc.name}:{fc.args}"
-
-                            if self._last_tool_call["name"] == call_key:
-                                self._last_tool_call["count"] += 1
-                            else:
-                                self._last_tool_call["name"] = call_key
-                                self._last_tool_call["args"] = fc.args
-                                self._last_tool_call["count"] = 1
-
-                            if self._last_tool_call["count"] > 1 and fc.name != "obtener_estado_sistema":
+                            if self._is_duplicate_call(fc.name, fc.args) and fc.name != "obtener_estado_sistema":
                                 responses.append(
                                     ToolResponseItem(
                                         name=fc.name,
                                         id=fc.id,
-                                        response={"status": "success", "message": "Ignorado por duplicado."}
+                                        response={"status": "success", "message": "Ignorado por duplicado en este turno."}
                                     )
                                 )
                                 continue
@@ -213,7 +239,7 @@ class Assistant:
             pass
         except Exception as e:
             err_msg = str(e)
-            if "1008" not in err_msg and "aborted" not in err_msg.lower() and "connection" not in err_msg.lower():
+            if "1008" not in err_msg and "1011" not in err_msg and "1006" not in err_msg and "abnormal closure" not in err_msg.lower() and "aborted" not in err_msg.lower() and "connection" not in err_msg.lower() and "internal error" not in err_msg.lower():
                 self.event_bus.publish(
                     ErrorOccurred(self.conversation_context, error=err_msg, source="Assistant: receive_and_route")
                 )
@@ -229,6 +255,8 @@ class Assistant:
         """Permite enviar mensajes de texto al modelo (desde el HUD web o API)."""
         if self._active_session:
             logger.info(f"💬 [HUD -> Atlas]: {text}")
+            if self.recorder:
+                self.recorder.waiting_for_model = True
             await self._active_session.send_text(text, end_of_turn=True)
 
     def toggle_microphone_pause(self) -> None:
@@ -282,7 +310,7 @@ class Assistant:
         with suppress_stderr():
             self.p = pyaudio.PyAudio()
 
-        logger.info("Cargando modelo de wake word (Hey Atlas)...")
+        logger.info("Cargando modelo de wake word...")
         with suppress_stderr():
             self.in_stream = self.p.open(
                 format=AUDIO_FORMAT,
@@ -299,7 +327,13 @@ class Assistant:
                 frames_per_buffer=1024
             )
 
-        self.recorder = AudioRecorder(self.in_stream, self.event_bus, self.conversation_context)
+        voice_cfg = self.config.voice if self.config else None
+        self.recorder = AudioRecorder(
+            self.in_stream,
+            self.event_bus,
+            self.conversation_context,
+            voice_config=voice_cfg
+        )
         # Inicializar modelo de wake word y calibración de micrófono en paralelo
         await asyncio.gather(
             self.recorder.load_wake_word(),
@@ -308,18 +342,70 @@ class Assistant:
 
         self.player = AudioPlayer(self.out_stream)
 
-        sys_prompt, _ = build_system_prompt(self.knowledge_manager, trajectory_manager=self.trajectory_manager)
-
         q_in = asyncio.Queue()
         q_out = asyncio.Queue()
 
+        # 1. Suscribir callback de subagente de desarrollo una sola vez
+        def _on_task_completed(event: TaskCompleted):
+            if self._active_session:
+                estado = "completó exitosamente" if event.success else "falló"
+                resumen = event.result[:800] if event.result else "(sin detalle)"
+                msg = (
+                    f"[SISTEMA: El subagente de desarrollo (ID: {event.task_id}) {estado}. "
+                    f"Resultado: {resumen}]"
+                )
+                asyncio.create_task(self._active_session.send_text(msg, end_of_turn=False))
+
+        self.event_bus.subscribe(TaskCompleted, _on_task_completed)
+
+        # 1.1. Suscribir notificaciones generales del sistema (ej: documentos listos)
+        def _on_system_notification(event: SystemNotification):
+            if self._active_session:
+                msg = f"[SISTEMA: {event.message}]"
+                asyncio.create_task(self._active_session.send_text(msg, end_of_turn=False))
+
+        self.event_bus.subscribe(SystemNotification, _on_system_notification)
+
+        # 1.2. Suscribir disparo de recordatorios para notificación por voz
+        def _on_reminder_triggered(event: ReminderTriggered):
+            if self._active_session:
+                msg = f"[SISTEMA: El recordatorio programado '{event.message}' acaba de sonar. Notifícaselo brevemente al usuario.]"
+                asyncio.create_task(self._active_session.send_text(msg, end_of_turn=False))
+
+        self.event_bus.subscribe(ReminderTriggered, _on_reminder_triggered)
+
+        # 2. Suscribir follow-up de wake word al completar un turno
+        def _on_turn_completed(event: TurnCompleted):
+            if self.recorder:
+                self.recorder.enter_follow_up()
+
+        self.event_bus.subscribe(TurnCompleted, _on_turn_completed)
+
+        # 3. Iniciar gestores de hardware e interacción continua en el ámbito exterior continuo
+        terminal_manager = TerminalInteractionManager(
+            assistant=self,
+            recorder=self.recorder,
+            approval_manager=self.approval_manager,
+            audio_queue_input=q_in
+        )
+        terminal_task = asyncio.create_task(terminal_manager.listen())
+        recorder_task = asyncio.create_task(self.recorder.listen(q_in, q_out, self.player))
+        player_task = asyncio.create_task(self.player.play(q_out))
+
         attempt = 0
         backoff = self.reconnect_initial_backoff
+        is_first_connection = True
 
         try:
             while attempt < self.max_reconnect_attempts:
                 attempt += 1
-                logger.info(f"Conectando al proveedor (intento {attempt}/{self.max_reconnect_attempts})...")
+                session_start_time = time.time()
+                if is_first_connection:
+                    logger.info(f"Conectando al proveedor (intento {attempt}/{self.max_reconnect_attempts})...")
+                else:
+                    logger.debug(f"Reconectando al proveedor (intento {attempt}/{self.max_reconnect_attempts})...")
+
+                sys_prompt, _ = build_system_prompt(self.knowledge_manager, trajectory_manager=self.trajectory_manager)
 
                 try:
                     async with self.provider.connect(
@@ -327,52 +413,94 @@ class Assistant:
                         tools=self.registry.get_all_tools()
                     ) as session:
                         self._active_session = session
-                        self.event_bus.publish(SessionStarted(self.conversation_context))
-                        play_sound("ready")
-                        await session.send_text(
-                            "[DIRECTIVA INICIAL: Di únicamente una frase corta confirmando que estás en línea y listo (ejemplo: 'Sistema Atlas en línea y listo'). Prohibido ejecutar herramientas o búsquedas.]",
-                            end_of_turn=True
-                        )
+
+                        if is_first_connection:
+                            self.event_bus.publish(SessionStarted(self.conversation_context))
+                            play_sound("ready")
+                            await session.send_text(
+                                "[DIRECTIVA INICIAL: Di únicamente una frase corta confirmando que estás en línea y listo (ejemplo: 'Sistema Atlas en línea y listo'). Prohibido ejecutar herramientas o búsquedas.]",
+                                end_of_turn=True
+                            )
+                            is_first_connection = False
+                            logger.info("Conexión establecida con el proveedor.")
+                        else:
+                            # Reconexión silenciosa y transparente
+                            self.event_bus.publish(SessionReconnected(self.conversation_context, attempt=attempt))
+                            logger.info("Conexión restablecida silenciosamente con el proveedor.")
 
                         # Reiniciar backoff tras conexión exitosa
                         backoff = self.reconnect_initial_backoff
-                        logger.info("Conexión establecida con el proveedor.")
 
-                        terminal_manager = TerminalInteractionManager(
-                            assistant=self,
-                            recorder=self.recorder,
-                            approval_manager=self.approval_manager,
-                            audio_queue_input=q_in
-                        )
+                        # Resetear banderas de control para la nueva sesión
+                        if self.recorder:
+                            self.recorder.waiting_for_model = False
+                            self.recorder.processing_tool = False
+                        if self.player:
+                            self.player.is_speaking = False
+
+                        # Limpiar colas de audio previas
+                        while not q_in.empty():
+                            try:
+                                q_in.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
+                        while not q_out.empty():
+                            try:
+                                q_out.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
 
                         try:
                             async with asyncio.TaskGroup() as tg:
-                                tg.create_task(self.recorder.listen(q_in, q_out, self.player))
                                 tg.create_task(self.send_realtime(session, q_in))
-                                tg.create_task(self.player.play(q_out))
                                 tg.create_task(self.receive_and_route(session, q_out, q_in))
-                                tg.create_task(terminal_manager.listen())
                         except ExceptionGroup as eg:
+                            is_idle_timeout = False
                             for exc in eg.exceptions:
                                 if isinstance(exc, asyncio.CancelledError):
                                     return
-                                logger.error(f"Fallo en tarea concurrente: {exc}")
-                                raise exc
+                                err_str = str(exc).lower()
+                                if "1008" in err_str or "1011" in err_str or "1006" in err_str or "abnormal closure" in err_str or "aborted" in err_str or "closed" in err_str or "internal error" in err_str:
+                                    is_idle_timeout = True
+                                else:
+                                    logger.error(f"Fallo en tarea concurrente: {exc}")
+
+                            if not is_idle_timeout and any(not isinstance(exc, asyncio.CancelledError) for exc in eg.exceptions):
+                                raise eg
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     logger.info("Sesión finalizada por el usuario.")
                     break
                 except Exception as e:
-                    logger.warning(f"Conexión con el proveedor interrumpida: {e}")
+                    session_duration = time.time() - session_start_time
+                    err_str = str(e).lower()
+                    is_idle_timeout = "1008" in err_str or "1011" in err_str or "1006" in err_str or "abnormal closure" in err_str or "aborted" in err_str or "closed" in err_str or "internal error" in err_str
+
+                    # Si la sesión estuvo viva y saludable por más de 15 segundos (ej. idle timeout),
+                    # reiniciar el contador para no morir por inactividad prolongada natural.
+                    if session_duration > 15.0:
+                        attempt = 1
+
+                    if is_idle_timeout:
+                        logger.info("Sesión con el proveedor reiniciada (corte o error transitorio). Reconectando...")
+                        reconnect_wait = 0.5
+                    else:
+                        logger.warning(f"Conexión con el proveedor interrumpida: {e}")
+                        reconnect_wait = backoff
+
                     if attempt >= self.max_reconnect_attempts:
                         logger.critical(f"Se excedió el número máximo de reconexiones ({self.max_reconnect_attempts}).")
                         break
-                    logger.info(f"Reintentando conexión en {backoff:.1f}s...")
-                    await asyncio.sleep(backoff)
-                    backoff = min(backoff * 2.0, self.reconnect_max_backoff)
+
+                    await asyncio.sleep(reconnect_wait)
+                    if not is_idle_timeout:
+                        backoff = min(backoff * 2.0, self.reconnect_max_backoff)
                 finally:
                     self._active_session = None
 
         finally:
+            terminal_task.cancel()
+            recorder_task.cancel()
+            player_task.cancel()
             await self.cleanup_async()
 
     async def cleanup_async(self):

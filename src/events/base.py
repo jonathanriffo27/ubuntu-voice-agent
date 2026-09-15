@@ -23,6 +23,10 @@ BaseEvent = Event
 @dataclass 
 class SessionStarted(Event): 
     pass
+
+@dataclass
+class SessionReconnected(Event):
+    attempt: int = 1
     
 @dataclass 
 class SessionEnded(Event): 
@@ -39,6 +43,15 @@ class VoiceListeningStopped(Event):
 # Aliases de escucha
 ListeningStarted = VoiceListeningStarted
 ListeningStopped = VoiceListeningStopped
+
+@dataclass
+class WakeWordDetected(Event):
+    wake_word: str
+    confidence: float
+
+@dataclass
+class WakeWordStandby(Event):
+    pass
 
 @dataclass 
 class SpeechRecognized(Event):
@@ -79,8 +92,16 @@ class KnowledgeUpdated(Event):
 class ResponseGenerated(Event):
     text: str
 
+@dataclass
+class AssistantTextChunk(Event):
+    text: str
+
+@dataclass
+class TurnCompleted(Event):
+    pass
+
 # Alias
-AssistantTextChunk = ResponseGenerated
+AssistantTurnCompleted = TurnCompleted
 
 @dataclass
 class UserInterrupted(Event):
@@ -144,3 +165,8 @@ class PluginsReloaded(Event):
 class ErrorOccurred(Event):
     error: str
     source: str
+
+@dataclass
+class SystemNotification(Event):
+    message: str
+

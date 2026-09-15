@@ -4,8 +4,14 @@ provider:
   voice: Aoede
 
 voice:
-  wake_word: atlas
+  mode: wake_word            # "wake_word" (estilo Ok Google) o "always_on"
+  wake_word: alexa           # "alexa", "hey_jarvis", "hey_mycroft" o ruta a .onnx
+  wake_word_threshold: 0.28  # Sensibilidad optimizada para español chileno (0.28 - 0.35)
+  follow_up_timeout: 7.0     # Ventana para repreguntar sin repetir wake word
+  activation_sound: true     # Reproduce ding al despertar
   language: es-CL
+  server_vad: false          # true = el VAD nativo de Gemini decide el fin de turno (experimental)
+  affective_dialog: false    # true = voz con entonación afectiva/emocional nativa
 
 memory:
   enabled: true
@@ -22,7 +28,7 @@ developer_agent:
   enabled: true
   provider: "cliproxy"
   base_url: "${CLIPROXY_BASE_URL:-http://127.0.0.1:8317/v1}"
-  api_key: "${CLIPROXY_API_KEY:-YOUR_CLIPROXY_API_KEY}"
+  api_key: "${CLIPROXY_API_KEY}"  # Sin fallback hardcodeado: exporta CLIPROXY_API_KEY en tu entorno
   model: "gemini-3.7-flash-high"
   temperature: 0.2
   max_iterations: 15

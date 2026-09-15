@@ -160,3 +160,44 @@ async def test_browser_tools_execution():
     res_l = await tool_leer.execute(ctx, url="https://test.com")
     assert res_l.success is True
     assert "Texto de la web" in res_l.content
+
+
+@pytest.mark.asyncio
+async def test_google_grounding_search_engine(tmp_path, monkeypatch):
+    # Aislar del estado persistido real (~/.cache) para un arranque limpio
+    monkeypatch.setattr(
+        "src.plugins.browser.engines.google_grounding._STATE_PATH",
+        str(tmp_path / "state.json")
+    )
+    engine = GoogleGroundingSearchEngine()
+    assert engine.name == "google_grounding"
+    assert engine.model == "gemini-3.6-flash"
+
+    # Test missing key
+    with patch.dict("os.environ", {}, clear=True):
+        res = await engine.search("consulta")
+        assert res.success is False
+        assert "GEMINI_API_KEY no configurada" in res.error
+
+    # Test mocked successful grounding
+    mock_candidate = MagicMock()
+    mock_chunk = MagicMock()
+    mock_chunk.web.title = "Noticia Google"
+    mock_chunk.web.uri = "https://noticias.google.com/1"
+    mock_candidate.grounding_metadata.grounding_chunks = [mock_chunk]
+
+    mock_resp = MagicMock()
+    mock_resp.text = "El tiempo en Puerto Natales es 4°C."
+    mock_resp.candidates = [mock_candidate]
+
+    mock_client = MagicMock()
+    mock_client.aio.models.generate_content = AsyncMock(return_value=mock_resp)
+
+    with patch.dict("os.environ", {"GEMINI_API_KEY": "dummy_key"}), \
+         patch("google.genai.Client", return_value=mock_client):
+        res = await engine.search("tiempo en puerto natales")
+        assert res.success is True
+        assert "4°C" in res.answer
+        assert len(res.results) == 1
+        assert res.results[0].url == "https://noticias.google.com/1"
+

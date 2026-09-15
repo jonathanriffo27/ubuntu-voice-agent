@@ -1,7 +1,41 @@
 import os
 import tempfile
 import pytest
-from src.config.loader import _expand_env_vars, load_config
+from src.config.loader import _expand_env_vars, load_config, load_dotenv
+
+
+def test_load_dotenv_carga_y_respeta_precedencia(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        '# comentario\n'
+        'TEST_DOTENV_A="valor_a"\n'
+        "export TEST_DOTENV_B='valor_b'\n"
+        'TEST_DOTENV_VACIO=\n'
+        'sin_igual_invalido\n'
+        'TEST_DOTENV_PLACEHOLDER="tu_clave_aqui"\n',
+        encoding="utf-8"
+    )
+    monkeypatch.delenv("TEST_DOTENV_A", raising=False)
+    monkeypatch.delenv("TEST_DOTENV_B", raising=False)
+    monkeypatch.setenv("TEST_DOTENV_PRE", "ya_estaba")
+    env_file_pre = tmp_path / ".env2"
+
+    loaded = load_dotenv(str(env_file))
+    assert os.environ["TEST_DOTENV_A"] == "valor_a"
+    assert os.environ["TEST_DOTENV_B"] == "valor_b"
+    # Placeholders y vacíos no se cargan
+    assert "TEST_DOTENV_VACIO" not in os.environ
+    assert "TEST_DOTENV_PLACEHOLDER" not in os.environ
+    assert loaded == 2
+
+    # El entorno real nunca se pisa
+    env_file_pre.write_text('TEST_DOTENV_PRE="desde_env_file"\n', encoding="utf-8")
+    load_dotenv(str(env_file_pre))
+    assert os.environ["TEST_DOTENV_PRE"] == "ya_estaba"
+
+
+def test_load_dotenv_inexistente():
+    assert load_dotenv("/tmp/no_existe_atlas_12345.env") == 0
 
 
 def test_expand_env_vars_direct():

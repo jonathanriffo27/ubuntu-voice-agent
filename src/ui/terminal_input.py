@@ -39,17 +39,70 @@ class TerminalInteractionManager:
         self._cursor_pos: int = 0
         self._history: List[str] = []
         self._history_idx: int = -1
+        self._last_cursor_row: int = 0
+        self._last_rendered_rows: int = 1
+
+    def _clear_input_area(self):
+        """Limpia completamente todas las filas ocupadas por el buffer de entrada actual."""
+        try:
+            if self._last_cursor_row > 0:
+                sys.stdout.write(f"\033[{self._last_cursor_row}A")
+            sys.stdout.write("\r")
+            for r in range(self._last_rendered_rows):
+                sys.stdout.write("\033[2K")
+                if r < self._last_rendered_rows - 1:
+                    sys.stdout.write("\033[1B")
+            if self._last_rendered_rows > 1:
+                sys.stdout.write(f"\033[{self._last_rendered_rows - 1}A")
+            sys.stdout.write("\r")
+            sys.stdout.flush()
+        except Exception:
+            pass
+        self._last_cursor_row = 0
+        self._last_rendered_rows = 1
 
     def _redraw_line(self):
         """Redibuja la línea de entrada actual y reposiciona el cursor exactamente."""
         try:
-            sys.stdout.write("\r\033[K\033[36m│\033[0m ")
-            content = "".join(self._buffer)
-            sys.stdout.write(content)
+            import shutil
+            cols = shutil.get_terminal_size((80, 24)).columns
+            if cols < 10:
+                cols = 80
 
-            chars_from_end = len(self._buffer) - self._cursor_pos
-            if chars_from_end > 0:
-                sys.stdout.write(f"\033[{chars_from_end}D")
+            # 1. Limpiar completamente lo renderizado anteriormente desde la fila 0
+            self._clear_input_area()
+
+            prompt_prefix = "\033[36m│\033[0m "
+            prefix_len = 2
+            content = "".join(self._buffer)
+
+            # 2. Escribir el prompt completo
+            sys.stdout.write(f"{prompt_prefix}{content}")
+
+            total_chars = prefix_len + len(self._buffer)
+            if total_chars == 0:
+                last_char_row = 0
+            else:
+                last_char_row = (total_chars - 1) // cols
+
+            # 3. Calcular posición deseada del cursor (0-indexed relativo al inicio del prompt)
+            cursor_idx = prefix_len + self._cursor_pos
+            target_row = cursor_idx // cols
+            target_col = cursor_idx % cols
+
+            # 4. Ajustar fila si es necesario
+            if target_row < last_char_row:
+                rows_up = last_char_row - target_row
+                sys.stdout.write(f"\033[{rows_up}A")
+            elif target_row > last_char_row:
+                rows_down = target_row - last_char_row
+                sys.stdout.write(f"\033[{rows_down}B")
+
+            # 5. Ajustar columna (ANSI CHA es 1-indexed)
+            sys.stdout.write(f"\033[{target_col + 1}G")
+
+            self._last_cursor_row = target_row
+            self._last_rendered_rows = max(last_char_row + 1, target_row + 1)
             sys.stdout.flush()
         except Exception:
             pass
@@ -57,24 +110,27 @@ class TerminalInteractionManager:
     def _toggle_mute(self):
         """Alterna el estado del micrófono con sonido de confirmación."""
         if self.recorder:
+            self._clear_input_area()
             self.recorder.is_paused = not self.recorder.is_paused
             play_sound("pause" if self.recorder.is_paused else "resume")
             estado = "PAUSADO ⏸️" if self.recorder.is_paused else "REANUDADO ▶️"
-            print(f"\r\033[36m│\033[0m \033[33m[🎤 {estado}]\033[0m Micrófono {'desactivado' if self.recorder.is_paused else 'activado'}.\n\033[36m│\033[0m ", end="", flush=True)
+            print(f"\033[36m│\033[0m \033[33m[🎤 {estado}]\033[0m Micrófono {'desactivado' if self.recorder.is_paused else 'activado'}.")
             self._redraw_line()
 
     def _adjust_sensitivity(self, delta: int):
         """Ajusta el umbral de silencio del VAD."""
         if self.recorder:
+            self._clear_input_area()
             if self.recorder.silence_threshold is None:
                 self.recorder.silence_threshold = 12000
             self.recorder.silence_threshold = max(500, self.recorder.silence_threshold + delta)
-            print(f"\r\033[36m│\033[0m \033[35m[🎤 UMBRAL VAD]\033[0m Ajustado a: {self.recorder.silence_threshold}\n\033[36m│\033[0m ", end="", flush=True)
+            print(f"\033[36m│\033[0m \033[35m[🎤 UMBRAL VAD]\033[0m Ajustado a: {self.recorder.silence_threshold}")
             self._redraw_line()
 
     async def _handle_enter(self):
         """Procesa el fin de línea al presionar Enter."""
         line = "".join(self._buffer).strip()
+        self._clear_input_area()
         self._buffer.clear()
         self._cursor_pos = 0
         self._history_idx = -1
@@ -83,13 +139,13 @@ class TerminalInteractionManager:
         if self.approval_manager and self.approval_manager.list_pending():
             lower = line.lower()
             if lower in ("", "y", "s", "si", "sí", "apruebo", "a", "1", "ok"):
-                sys.stdout.write(f"\r\033[K\033[36m│\033[0m \033[32m[🛡️ APROBADO]\033[0m Autorización concedida.\n")
+                sys.stdout.write(f"\033[36m│\033[0m \033[32m[🛡️ APROBADO]\033[0m Autorización concedida.\n")
                 sys.stdout.flush()
                 resolved_id = self.approval_manager.resolve_latest(True, resolver="terminal")
                 if resolved_id:
                     return
             elif lower in ("n", "no", "rechazar", "rechazo", "cancelar", "0", "c"):
-                sys.stdout.write(f"\r\033[K\033[36m│\033[0m \033[31m[🛡️ RECHAZADO]\033[0m Autorización denegada.\n")
+                sys.stdout.write(f"\033[36m│\033[0m \033[31m[🛡️ RECHAZADO]\033[0m Autorización denegada.\n")
                 sys.stdout.flush()
                 resolved_id = self.approval_manager.resolve_latest(False, resolver="terminal")
                 if resolved_id:
@@ -97,8 +153,6 @@ class TerminalInteractionManager:
 
         # 2. Comandos slash rápidos
         if line.startswith("/"):
-            sys.stdout.write("\r\033[K")
-            sys.stdout.flush()
             cmd = line.lower().strip()
             if cmd in ("/mute", "/pausa", "/m"):
                 self._toggle_mute()
@@ -108,6 +162,46 @@ class TerminalInteractionManager:
                     self._adjust_sensitivity(500)
                 elif "-" in cmd or "bajar" in cmd:
                     self._adjust_sensitivity(-500)
+                return
+            elif cmd in ("/mode", "/modo"):
+                if self.recorder and hasattr(self.recorder, '_voice_config'):
+                    vc = self.recorder._voice_config
+                    from src.voice.recorder import RecorderState
+                    if vc:
+                        old = getattr(vc, 'mode', 'always_on')
+                        vc.mode = "always_on" if old == "wake_word" else "wake_word"
+                        if vc.mode == "wake_word":
+                            self.recorder._state = RecorderState.STANDBY
+                            ww_name = getattr(vc, 'wake_word', 'alexa').capitalize()
+                            estado_msg = f"Wake Word (en espera de '{ww_name}')"
+                        else:
+                            self.recorder._state = RecorderState.ACTIVE
+                            estado_msg = "Always-On (micrófono siempre activo)"
+                        print(f"\033[36m│\033[0m \033[35m[🔄 MODO DE VOZ]\033[0m Cambiado a: {estado_msg}")
+                    else:
+                        print(f"\033[36m│\033[0m \033[33m[MODO]\033[0m Configuración de voz no disponible.")
+                self._redraw_line()
+                return
+            elif cmd.startswith("/umbral"):
+                if self.recorder and hasattr(self.recorder, '_voice_config') and self.recorder._voice_config:
+                    vc = self.recorder._voice_config
+                    parts = cmd.split()
+                    if len(parts) > 1:
+                        val_str = parts[1]
+                        if val_str in ("+", "subir", "up"):
+                            vc.wake_word_threshold = min(0.95, round(vc.wake_word_threshold + 0.05, 2))
+                        elif val_str in ("-", "bajar", "down"):
+                            vc.wake_word_threshold = max(0.10, round(vc.wake_word_threshold - 0.05, 2))
+                        else:
+                            try:
+                                new_val = float(val_str)
+                                vc.wake_word_threshold = max(0.05, min(0.95, round(new_val, 2)))
+                            except ValueError:
+                                pass
+                    print(f"\033[36m│\033[0m \033[35m[🎚️ UMBRAL WAKE WORD]\033[0m Configurado a: {vc.wake_word_threshold:.2f} (rango: 0.10 a 0.90)")
+                else:
+                    print(f"\033[36m│\033[0m \033[33m[UMBRAL]\033[0m Configuración de voz no disponible.")
+                self._redraw_line()
                 return
             elif cmd in ("/clear", "/limpiar", "/cls"):
                 os.system("clear")
@@ -120,9 +214,11 @@ class TerminalInteractionManager:
                 print(f"\033[36m│\033[0m \033[1mTab / Shift+Espacio / Ctrl+Espacio\033[0m: Silenciar / Reanudar Micrófono")
                 print(f"\033[36m│\033[0m \033[1m← / →\033[0m                              : Mover cursor y editar texto en línea")
                 print(f"\033[36m│\033[0m \033[1m↑ / ↓\033[0m                              : Navegar historial de prompts")
-                print(f"\033[36m│\033[0m \033[1mCtrl+Arriba / Ctrl+Abajo\033[0m           : Ajustar umbral de sensibilidad")
+                print(f"\033[36m│\033[0m \033[1mCtrl+Arriba / Ctrl+Abajo\033[0m           : Ajustar umbral de silencio VAD")
                 print(f"\033[36m│\033[0m \033[1m[Enter] en autorización\033[0m            : Aprobar acción pendiente")
                 print(f"\033[36m│\033[0m \033[1mEscribir texto + [Enter]\033[0m           : Enviar prompt escrito a Atlas")
+                print(f"\033[36m│\033[0m \033[1m/mode\033[0m                              : Alternar modo (Wake Word / Always-On)")
+                print(f"\033[36m│\033[0m \033[1m/umbral <valor>\033[0m                     : Ajustar sensibilidad Wake Word (ej: /umbral 0.35)")
                 print(f"\033[36m│\033[0m \033[1m/mute, /clear, /help\033[0m               : Comandos rápidos de control")
                 print(f"\033[36m└────────────────────────────────────────────────────────┘\033[0m\n\033[36m│\033[0m ", end="", flush=True)
                 return
@@ -132,7 +228,7 @@ class TerminalInteractionManager:
             if not self._history or self._history[-1] != line:
                 self._history.append(line)
             # Reemplazar la línea tipeada en el mismo lugar sin duplicar renglón
-            sys.stdout.write(f"\r\033[K\033[36m│\033[0m \033[1m👤 Tú:\033[0m {line}\n")
+            sys.stdout.write(f"\033[36m│\033[0m \033[1m👤 Tú:\033[0m {line}\n")
             sys.stdout.flush()
             if self.assistant:
                 await self.assistant.send_text_message(line)
@@ -241,24 +337,26 @@ class TerminalInteractionManager:
                 self._redraw_line()
             return
 
-        # 5. Ctrl+C
+        # 5. Ctrl+C: eleva SIGINT en el hilo principal para que el runtime
+        # ejecute la rutina de apagado limpio (micrófono, HUD, MCP, túnel SSH).
+        import signal
         if raw == b'\x03':
-            sys.exit(0)
+            os.kill(os.getpid(), signal.SIGINT)
 
         # 6. Caracteres de texto estándar
         try:
             text = raw.decode('utf-8', errors='ignore')
+            changed = False
             for ch in text:
                 if ch >= ' ':
                     if self._cursor_pos == len(self._buffer):
                         self._buffer.append(ch)
-                        self._cursor_pos += 1
-                        sys.stdout.write(ch)
-                        sys.stdout.flush()
                     else:
                         self._buffer.insert(self._cursor_pos, ch)
-                        self._cursor_pos += 1
-                        self._redraw_line()
+                    self._cursor_pos += 1
+                    changed = True
+            if changed:
+                self._redraw_line()
         except Exception:
             pass
 

@@ -1,11 +1,14 @@
 import logging
-import sys
 import os
+import sys
 from typing import Optional
 
 
 class ColoredFormatter(logging.Formatter):
-    """Formateador de consola con colores ANSI para niveles de log."""
+    """
+    Formateador de consola compacto: símbolo + nivel coloreado + módulo corto + mensaje.
+    El modo 'verbose' (ATLAS_LOG_VERBOSE=1) restaura timestamp y nombre completo del módulo.
+    """
 
     COLORS = {
         logging.DEBUG: "\033[36m",     # Cyan
@@ -14,15 +17,37 @@ class ColoredFormatter(logging.Formatter):
         logging.ERROR: "\033[31m",     # Rojo
         logging.CRITICAL: "\033[1;31m" # Rojo negrita
     }
+    SYMBOLS = {
+        logging.DEBUG: "·",
+        logging.INFO: "ℹ",
+        logging.WARNING: "⚠",
+        logging.ERROR: "✖",
+        logging.CRITICAL: "✖✖"
+    }
     RESET = "\033[0m"
+    DIM = "\033[2m"
 
-    def __init__(self, fmt="[%(levelname_colored)s] %(message)s", datefmt=None):
-        super().__init__(fmt=fmt, datefmt=datefmt)
+    def __init__(self, fmt=None, datefmt=None, verbose: Optional[bool] = None):
+        super().__init__(fmt=fmt or "%(message)s", datefmt=datefmt)
+        if verbose is None:
+            verbose = os.environ.get("ATLAS_LOG_VERBOSE", "").strip() in ("1", "true", "yes")
+        self.verbose = verbose
+        self.datefmt = datefmt or "%H:%M:%S"
 
     def format(self, record):
         color = self.COLORS.get(record.levelno, self.RESET)
-        record.levelname_colored = f"{color}{record.levelname:<7}{self.RESET}"
-        return super().format(record)
+        symbol = self.SYMBOLS.get(record.levelno, " ")
+        timestamp = self.formatTime(record, self.datefmt)
+        message = record.getMessage()
+        if record.exc_info:
+            message += "\n" + self.formatException(record.exc_info)
+
+        if self.verbose:
+            return f"{timestamp} {color}[{record.levelname}]{self.RESET} [{record.name}]: {message}"
+
+        # Compacto: '14:58:31 ⚠ google: mensaje' (módulo = último componente)
+        short_name = record.name.rsplit(".", 1)[-1] if "." in record.name else record.name
+        return f"{self.DIM}{timestamp}{self.RESET} {color}{symbol} {short_name}{self.RESET}: {message}"
 
 
 def setup_logging(
@@ -33,8 +58,8 @@ def setup_logging(
 ) -> logging.Logger:
     """
     Configura el sistema de logging estructurado centralizado para Atlas.
-    Por defecto, mantiene la consola limpia (solo advertencias y errores) y guarda
-    todos los detalles de depuración en el archivo de log.
+    Consola limpia y compacta (advertencias+), archivo de log completo con detalles.
+    Usa ATLAS_LOG_VERBOSE=1 para ver timestamps y módulos completos en consola.
     """
     if level is not None:
         console_level = level
@@ -47,14 +72,10 @@ def setup_logging(
     if root_logger.handlers:
         root_logger.handlers.clear()
 
-    # Handler de Consola (discreto y limpio)
+    # Handler de Consola (compacto por defecto)
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(console_level)
-    console_fmt = ColoredFormatter(
-        fmt="%(asctime)s [%(levelname_colored)s] [%(name)s]: %(message)s",
-        datefmt="%H:%M:%S"
-    )
-    console_handler.setFormatter(console_fmt)
+    console_handler.setFormatter(ColoredFormatter(datefmt="%H:%M:%S"))
     root_logger.addHandler(console_handler)
 
     # Handler de Archivo (completo con timestamps y números de línea)

@@ -48,10 +48,12 @@ class AsyncReminderScheduler:
         self.reminders: Dict[str, Reminder] = {}
         self._worker_task: Optional[asyncio.Task] = None
         self._is_running = False
+        self._wake_event: Optional[asyncio.Event] = None
         self._load_storage()
 
     def _load_storage(self) -> None:
         """Carga recordatorios persistidos desde el archivo JSON."""
+        self._storage_corrupted = False
         if not os.path.exists(self.storage_file):
             return
 
@@ -64,10 +66,28 @@ class AsyncReminderScheduler:
                         self.reminders[r.id] = r
             logger.info(f"Cargados {len(self.reminders)} recordatorios activos desde {self.storage_file}.")
         except Exception as e:
-            logger.error(f"Error cargando recordatorios: {e}")
+            # Preservar el archivo corrupto y BLOQUEAR escrituras futuras
+            # para jamás destruir datos potencialmente recuperables.
+            self._storage_corrupted = True
+            try:
+                import shutil
+                backup_path = f"{self.storage_file}.corrupted.{int(time.time())}.bak"
+                shutil.copy2(self.storage_file, backup_path)
+                logger.error(
+                    f"Error cargando recordatorios: {e}. Copia preservada en {backup_path}. "
+                    "Escrituras bloqueadas hasta reparar o eliminar el archivo."
+                )
+            except Exception:
+                logger.error(f"Error cargando recordatorios: {e}")
 
     def _save_storage(self) -> None:
         """Guarda atómicamente el estado de los recordatorios."""
+        if getattr(self, "_storage_corrupted", False) and os.path.exists(self.storage_file):
+            logger.error(
+                f"Guardado bloqueado: '{self.storage_file}' está corrupto. "
+                "Repara o elimina el archivo (hay respaldo .corrupted.bak) para reanudar."
+            )
+            return
         tmp_file = f"{self.storage_file}.tmp"
         try:
             with open(tmp_file, "w", encoding="utf-8") as f:
@@ -96,6 +116,10 @@ class AsyncReminderScheduler:
         )
         self.reminders[reminder_id] = reminder
         self._save_storage()
+
+        # Despertar al worker inmediatamente si el nuevo recordatorio vence antes
+        if self._wake_event is not None:
+            self._wake_event.set()
 
         logger.info(f"⏰ Recordatorio creado [{reminder_id}]: '{message}' en {int(seconds_from_now)}s ({reminder.human_trigger_time})")
 
@@ -126,15 +150,31 @@ class AsyncReminderScheduler:
         return False
 
     async def _worker_loop(self):
-        """Bucle en segundo plano que evalúa cada segundo los recordatorios cumplidos."""
+        """Bucle en segundo plano con espera dinámica: duerme hasta el próximo
+        vencimiento (o hasta que se cree un recordatorio nuevo) en lugar de
+        sondear en bucle cada segundo."""
         logger.info("Motor de recordatorios y cron iniciado.")
+        if self._wake_event is None:
+            self._wake_event = asyncio.Event()
         while self._is_running:
             try:
                 now = time.time()
                 for reminder in list(self.reminders.values()):
                     if reminder.status == "pending" and now >= reminder.trigger_at:
                         await self._trigger_reminder(reminder)
-                await asyncio.sleep(1.0)
+
+                # Dormir hasta el próximo vencimiento (cap 60s como red de seguridad),
+                # despertando al instante si se añade un recordatorio nuevo.
+                pending = [r.trigger_at for r in self.reminders.values() if r.status == "pending"]
+                if pending:
+                    wait = max(0.1, min(min(pending) - time.time(), 60.0))
+                else:
+                    wait = 60.0
+                try:
+                    self._wake_event.clear()
+                    await asyncio.wait_for(self._wake_event.wait(), timeout=wait)
+                except asyncio.TimeoutError:
+                    pass
             except asyncio.CancelledError:
                 break
             except Exception as e:

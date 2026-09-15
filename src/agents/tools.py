@@ -1,4 +1,6 @@
 import os
+import re
+import shlex
 import subprocess
 from typing import Dict, Any, List, Optional
 from src.security.approval import ApprovalManager
@@ -18,6 +20,78 @@ class AgentCodeTools:
     def __init__(self, approval_manager: ApprovalManager, reload_callback=None):
         self.approval_manager = approval_manager
         self.reload_callback = reload_callback
+        self._venv_bin = os.path.join(_PROJECT_ROOT, "venv", "bin")
+
+    @staticmethod
+    def _resolve_project_path(ruta_relativa: str) -> Optional[str]:
+        """
+        Resuelve una ruta relativa confinándola estrictamente al directorio del
+        proyecto (path jail). Devuelve None si intenta escapar (ej: ../../etc/passwd).
+        """
+        rel = (ruta_relativa or "").strip()
+        if os.path.isabs(rel):
+            return None  # Rutas absolutas prohibidas: solo rutas relativas al proyecto
+        abs_path = os.path.realpath(os.path.join(_PROJECT_ROOT, rel.lstrip("/")))
+        try:
+            if os.path.commonpath([abs_path, _PROJECT_ROOT]) != _PROJECT_ROOT:
+                return None
+        except ValueError:
+            return None  # Paths en unidades/raíces distintas
+        return abs_path
+
+    @staticmethod
+    def _is_safe_readonly_command(cmd: str) -> bool:
+        """
+        Clasifica un comando como 'seguro de solo lectura' para auto-aprobarlo
+        sin compuerta HITL. Rechaza cualquier encadenamiento, redirección,
+        sustitución de comandos o binario fuera de la allowlist.
+        """
+        # Rechazar operadores de shell que permiten encadenar ejecución arbitraria
+        for token in (";", "&&", "||", "|", "`", "$(", ">", "<", "\n", "\r"):
+            if token in cmd:
+                return False
+        try:
+            parts = shlex.split(cmd)
+        except ValueError:
+            return False
+        if not parts:
+            return False
+
+        binary = os.path.basename(parts[0])
+        args = parts[1:]
+
+        if binary in {"which", "whereis", "type", "echo", "uname", "pwd", "ls"}:
+            return True
+        if binary == "git":
+            return bool(args) and args[0] in {"status", "diff", "log", "show", "branch"}
+        if binary == "pip":
+            return bool(args) and args[0] in {"list", "show"}
+        if binary in {"python", "python3"}:
+            return bool(args) and args[0] in {"--version", "-V"}
+        return False
+
+    def _rewrite_to_venv(self, cmd: str) -> str:
+        """
+        Red de seguridad: reescribe comandos pip/python desnudos al venv del proyecto.
+        Evita el error PEP 668 'externally-managed-environment' de forma transparente.
+        No toca comandos que ya usan rutas absolutas o ./venv/.
+        """
+        if "venv/" in cmd or "/bin/" in cmd:
+            return cmd  # Ya apunta a un venv, no tocar
+
+        # Patrones: 'pip install X', 'pip3 install X', 'python script.py', 'python3 -m X'
+        rewrites = [
+            (r"^pip3?\b", os.path.join(self._venv_bin, "pip")),
+            (r"^python3?\b", os.path.join(self._venv_bin, "python")),
+        ]
+        original = cmd
+        for pattern, replacement in rewrites:
+            cmd = re.sub(pattern, replacement, cmd)
+
+        if cmd != original:
+            logger.info(f"Auto-rewrite venv: '{original}' → '{cmd}'")
+
+        return cmd
 
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
         """Devuelve las definiciones en formato JSON Schema de OpenAI."""
@@ -115,6 +189,22 @@ class AgentCodeTools:
                         "properties": {}
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "capturar_pantalla_desarrollo",
+                    "description": "Toma una captura de pantalla ultrarrápida y optimizada (~60KB) del monitor para verificar visualmente si una tarea de interfaz/GUI funcionó, diagnosticar estados de ventanas o confirmar acciones. Es segura y de solo lectura.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "motivo": {
+                                "type": "string",
+                                "description": "Breve explicación de por qué tomas la captura (ej: 'verificar si WhatsApp abrió el chat', 'comprobar estado de ventana')."
+                            }
+                        }
+                    }
+                }
             }
         ]
 
@@ -122,7 +212,9 @@ class AgentCodeTools:
         """Enruta y ejecuta la llamada a herramienta del subagente."""
         try:
             if name == "leer_archivo":
-                ruta = os.path.join(_PROJECT_ROOT, args.get("ruta_relativa", "").lstrip("/"))
+                ruta = self._resolve_project_path(args.get("ruta_relativa", ""))
+                if ruta is None:
+                    return f"Error: Ruta '{args.get('ruta_relativa')}' fuera del directorio del proyecto (bloqueado por seguridad)."
                 if not os.path.exists(ruta):
                     return f"Error: El archivo '{args.get('ruta_relativa')}' no existe."
                 with open(ruta, "r", encoding="utf-8") as f:
@@ -131,7 +223,9 @@ class AgentCodeTools:
             elif name == "escribir_archivo":
                 ruta_rel = args.get("ruta_relativa", "").lstrip("/")
                 contenido = args.get("contenido", "")
-                ruta_abs = os.path.join(_PROJECT_ROOT, ruta_rel)
+                ruta_abs = self._resolve_project_path(ruta_rel)
+                if ruta_abs is None:
+                    return f"Error: Ruta '{ruta_rel}' fuera del directorio del proyecto (bloqueado por seguridad)."
 
                 desc = f"Crear/modificar archivo: {ruta_rel} ({len(contenido)} caracteres)"
                 # Solicitar aprobación humana (HITL) con 120s de margen
@@ -151,7 +245,9 @@ class AgentCodeTools:
 
             elif name == "listar_directorio":
                 ruta_rel = args.get("ruta_relativa", ".").lstrip("/")
-                ruta_abs = os.path.join(_PROJECT_ROOT, ruta_rel)
+                ruta_abs = self._resolve_project_path(ruta_rel)
+                if ruta_abs is None:
+                    return f"Error: Ruta '{ruta_rel}' fuera del directorio del proyecto (bloqueado por seguridad)."
                 if not os.path.exists(ruta_abs):
                     return f"Error: La ruta '{ruta_rel}' no existe."
                 entries = []
@@ -166,13 +262,13 @@ class AgentCodeTools:
                 if not cmd:
                     return "Error: Comando vacío."
 
-                # Comandos seguros de solo lectura (diagnóstico y exploración de entorno)
-                SAFE_READONLY_PREFIXES = (
-                    "which ", "whereis ", "type ", "echo ", "uname", "pwd", "ls", "find ", "grep ",
-                    "cat ", "head ", "tail ", "python --version", "python3 --version", "git status",
-                    "git diff", "git log", "pip list", "env | grep", "env|grep"
-                )
-                is_safe_readonly = any(cmd.startswith(p) for p in SAFE_READONLY_PREFIXES)
+                # Auto-rewrite: redirigir pip/python desnudos al venv del proyecto
+                cmd = self._rewrite_to_venv(cmd)
+
+                # Comandos seguros de solo lectura (validación estricta por argv,
+                # inmune a encadenamiento tipo "ls; rm -rf ~" o sustitución "$()").
+                # Para leer archivos, el subagente debe usar 'leer_archivo' (con path jail).
+                is_safe_readonly = self._is_safe_readonly_command(cmd)
 
                 if not is_safe_readonly:
                     desc = "Ejecutar comando en terminal"
@@ -212,6 +308,20 @@ class AgentCodeTools:
                     count = self.reload_callback()
                     return f"Plugins recargados exitosamente en caliente ({count} herramientas activas en memoria)."
                 return "Plugins recargados."
+
+            elif name == "capturar_pantalla_desarrollo":
+                try:
+                    from src.vision.service import OptimizedScreenCaptureService
+                    service = OptimizedScreenCaptureService()
+                    img_bytes = service.capture_screen(max_dim=1280, quality=70)
+                    tmp_path = "/tmp/atlas_subagent_screen.jpg"
+                    with open(tmp_path, "wb") as f:
+                        f.write(img_bytes)
+                    motivo = args.get("motivo", "").strip()
+                    detalle = f" Motivo: '{motivo}'." if motivo else ""
+                    return f"Captura optimizada tomada con éxito ({len(img_bytes)/1024:.1f} KB) y guardada en '{tmp_path}'.{detalle}"
+                except Exception as e:
+                    return f"Error capturando pantalla: {e}"
 
             else:
                 return f"Herramienta desconocida: {name}"

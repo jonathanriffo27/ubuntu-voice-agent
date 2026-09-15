@@ -1,6 +1,6 @@
 import pytest
 from src.providers.base import (
-    AudioChunk, TextChunk, ToolCallItem, ToolCallRequest,
+    AudioChunk, TextChunk, UserTextChunk, ToolCallItem, ToolCallRequest,
     Interrupted, TurnComplete, ToolResponseItem
 )
 from src.providers.gemini_session import GeminiSession
@@ -88,6 +88,71 @@ async def test_gemini_session_yields_normalized_audio_and_text():
     assert events[1].data == b"audio_bytes_123"
 
     assert isinstance(events[2], TurnComplete)
+
+
+class MockTranscription:
+    def __init__(self, text="Transcripción de voz en tiempo real"):
+        self.text = text
+
+
+@pytest.mark.asyncio
+async def test_gemini_session_yields_output_transcription_text():
+    messages = [
+        MockGeminiMsg(
+            server_content=MockServerContent(
+                model_turn=MockModelTurn(parts=[
+                    MockGeminiPart(inline_data=MockInlineData(b"pcm_chunk_data"))
+                ]),
+                turn_complete=False
+            )
+        ),
+        MockGeminiMsg(
+            server_content=MockServerContent(
+                model_turn=None,
+                turn_complete=True
+            )
+        )
+    ]
+    # Inyectar output_transcription en el primer mensaje
+    messages[0].server_content.output_transcription = MockTranscription("Hola Jonathan, ¿en qué puedo ayudarte?")
+    
+    native = MockNativeGeminiSession(messages)
+    session = GeminiSession(native)
+
+    events = []
+    async for event in session.receive():
+        events.append(event)
+
+    assert len(events) == 3
+    assert isinstance(events[0], TextChunk)
+    assert events[0].text == "Hola Jonathan, ¿en qué puedo ayudarte?"
+    assert isinstance(events[1], AudioChunk)
+    assert events[1].data == b"pcm_chunk_data"
+    assert isinstance(events[2], TurnComplete)
+
+
+@pytest.mark.asyncio
+async def test_gemini_session_yields_input_transcription_text():
+    messages = [
+        MockGeminiMsg(
+            server_content=MockServerContent(
+                model_turn=None,
+                turn_complete=False
+            )
+        )
+    ]
+    messages[0].server_content.input_transcription = MockTranscription("hola atlas como estas")
+
+    native = MockNativeGeminiSession(messages)
+    session = GeminiSession(native)
+
+    events = []
+    async for event in session.receive():
+        events.append(event)
+
+    assert len(events) == 1
+    assert isinstance(events[0], UserTextChunk)
+    assert events[0].text == "hola atlas como estas"
 
 
 @pytest.mark.asyncio

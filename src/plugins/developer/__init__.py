@@ -1,5 +1,5 @@
 from src.tools.registry import ToolRegistry
-from .tools import DelegarTareaDesarrolloTool, AprobarAccionTool, RecargarPluginsTool
+from .tools import DelegarTareaDesarrolloTool, AprobarAccionTool, RecargarPluginsTool, ConsultarEstadoTareaTool
 
 
 def setup(registry: ToolRegistry, dependencies: dict) -> None:
@@ -13,3 +13,5 @@ def setup(registry: ToolRegistry, dependencies: dict) -> None:
         registry.register(AprobarAccionTool(approval_manager))
     if reload_cb:
         registry.register(RecargarPluginsTool(reload_cb))
+    if dev_agent and approval_manager:
+        registry.register(ConsultarEstadoTareaTool(dev_agent, approval_manager))

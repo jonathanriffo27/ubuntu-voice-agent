@@ -1,4 +1,5 @@
 import asyncio
+import os
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from src.ui.terminal_input import TerminalInteractionManager
@@ -142,5 +143,37 @@ async def test_process_chunk_arrows_and_keys():
     # Flecha derecha (→)
     await manager._process_chunk(b"\x1b[C")
     assert manager._cursor_pos == 4
+
+
+@pytest.mark.asyncio
+async def test_multiline_wrapped_input_and_backspace(monkeypatch):
+    import shutil
+    # Forzar ancho de terminal a 80 columnas para la prueba
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((80, 24)))
+
+    manager = TerminalInteractionManager(assistant=MagicMock())
+
+    # Escribir prompt largo de 120 caracteres (excede las 80 columnas)
+    long_text = "crea un informe con los casos de usos mas utiles para un asistente por voz para un sistema operativo con ubuntu y pegalo en un nuevo docuemt"
+    await manager._process_chunk(long_text.encode("utf-8"))
+
+    assert len(manager._buffer) == len(long_text)
+    # Visible: 2 (prefix) + 140 = 142 chars -> row 1 en 80 cols
+    assert manager._last_rendered_rows == 2
+    assert manager._last_cursor_row == 1
+
+    # Backspace 8 veces para corregir " docuemt" (el caso exacto del reporte de usuario)
+    for _ in range(8):
+        await manager._process_chunk(b"\x7f")
+
+    assert "".join(manager._buffer) == long_text[:-8]
+    assert manager._cursor_pos == len(long_text) - 8
+    assert manager._last_rendered_rows == 2
+    assert manager._last_cursor_row == 1
+
+    # Limpiar el área antes de Enter
+    manager._clear_input_area()
+    assert manager._last_rendered_rows == 1
+    assert manager._last_cursor_row == 0
 
 

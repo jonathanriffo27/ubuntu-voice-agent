@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import AsyncGenerator, Any, List, Dict
+from typing import AsyncGenerator, Any, List, Dict, Optional
 from dataclasses import dataclass, field
 from src.tools.base import BaseTool
 
@@ -18,6 +18,13 @@ class AudioChunk:
 class TextChunk:
     """Fragmento de texto o transcripción recibido del modelo."""
     text: str
+
+
+@dataclass
+class UserTextChunk:
+    """Transcripción del habla del usuario recibida del modelo (STT en tiempo real)."""
+    text: str
+
 
 
 @dataclass
@@ -47,11 +54,28 @@ class TurnComplete:
 
 
 @dataclass
+class GoAway:
+    """El servidor solicita reconexión proactiva (fin de vida del WebSocket inminente)."""
+    time_left: Optional[str] = None
+
+
+@dataclass
+class ToolCallsCancelled:
+    """El servidor canceló llamadas a herramientas pendientes (ej: usuario interrumpió)."""
+    ids: List[str] = field(default_factory=list)
+
+
+@dataclass
 class ToolResponseItem:
     """Respuesta formateada de una herramienta para enviar al modelo."""
     name: str
     id: str
     response: Dict[str, Any]
+
+
+class SessionReconnectRequested(Exception):
+    """Excepción de control de flujo: reconexión limpia e inmediata de la sesión."""
+    pass
 
 
 # ==========================================
