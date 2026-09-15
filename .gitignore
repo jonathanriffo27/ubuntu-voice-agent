@@ -11,3 +11,6 @@ atlas_trajectory.json
 *.log
 genai_error.txt
 last_edit.json
+
+# Worktrees aislados del DeveloperAgent (Fase 3)
+.worktrees/

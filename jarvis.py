@@ -94,12 +94,24 @@ if __name__ == "__main__":
             approval_manager=approval_manager,
             reload_callback=reload_cb
         )
+        # Fase 3: aislar cada tarea del subagente en un git worktree
+        worktree_manager = None
+        try:
+            from src.agents.workspace import WorktreeManager
+            wm = WorktreeManager()
+            if wm.git_available():
+                wm.cleanup_stale()
+                worktree_manager = wm
+        except Exception as e:
+            logger.debug(f"Worktrees no disponibles ({e}); el subagente trabajará directo con HITL.")
+
         developer_agent = DeveloperAgent(
             client=cli_client,
             code_tools=agent_tools,
             event_bus=event_bus,
             model=config.developer_agent.model,
-            max_iterations=config.developer_agent.max_iterations
+            max_iterations=config.developer_agent.max_iterations,
+            worktree_manager=worktree_manager
         )
         dependencies["developer_agent"] = developer_agent
         dependencies["reload_callback"] = reload_cb

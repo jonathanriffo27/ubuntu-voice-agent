@@ -63,6 +63,11 @@ class DeveloperAgent:
     Subagente de Razonamiento y Programación en Segundo Plano.
     Se comunica con CLIProxyAPI en el servidor Oracle (usando gemini-3.7-flash-high)
     para ejecutar tareas autónomas de código con compuerta de aprobación HITL.
+
+    Con `worktree_manager` (Fase 3), cada tarea trabaja en un git worktree aislado:
+    las escrituras NO requieren HITL intermedio (son seguras: están en una rama
+    aparte) y la integración se decide UNA vez al final: pytest en el worktree,
+    diff mostrado al usuario y merge solo si aprueba.
     """
 
     def __init__(
@@ -71,13 +76,15 @@ class DeveloperAgent:
         code_tools: AgentCodeTools,
         event_bus: Optional[EventBus] = None,
         model: str = "gemini-3.7-flash-high",
-        max_iterations: int = 15
+        max_iterations: int = 15,
+        worktree_manager=None,
     ):
         self.client = client
         self.tools = code_tools
         self.event_bus = event_bus or EventBus()
         self.model = model
         self.max_iterations = max_iterations
+        self.worktree_manager = worktree_manager
         self._active_tasks: Dict[str, asyncio.Task] = {}
 
     def start_background_task(self, instruction: str) -> str:
@@ -121,8 +128,85 @@ class DeveloperAgent:
                 result[tid] = {"status": "running"}
         return result
 
+    def _prepare_task_tools(self, task_id: str):
+        """
+        Devuelve (tools, worktree_info). Si hay WorktreeManager disponible,
+        la tarea corre aislada en su propia rama/worktree.
+        """
+        if not self.worktree_manager:
+            return self.tools, None
+        try:
+            info = self.worktree_manager.create(task_id)
+            tools = AgentCodeTools(
+                approval_manager=self.tools.approval_manager,
+                reload_callback=self.tools.reload_callback,
+                project_root=info.path,
+                require_write_approval=False,  # aislado: se revisa el diff al final
+            )
+            logger.info(f"🌿 Tarea [{task_id}] aislada en worktree: {info.path}")
+            return tools, info
+        except Exception as e:
+            logger.warning(f"No se pudo crear worktree para [{task_id}] ({e}); modo directo con HITL.")
+            return self.tools, None
+
+    async def _finalize_worktree(self, info, task_id: str) -> str:
+        """
+        Cierre de una tarea con worktree: commit → pytest → diff → HITL → merge.
+        Devuelve un apéndice textual para el resumen final de la tarea.
+        """
+        mgr = self.worktree_manager
+        approval = self.tools.approval_manager
+
+        if not mgr.has_changes(info):
+            mgr.discard(info)
+            return "La tarea no produjo cambios en el código."
+
+        mgr.commit_all(info)
+
+        ok, test_out = mgr.run_tests(info)
+        if not ok:
+            return (
+                f"⚠️ Los tests FALLARON en el worktree; NO se integró nada. "
+                f"El trabajo quedó en {info.path} (rama {info.branch}) para inspección manual. "
+                f"Salida de pytest: {test_out[-800:]}"
+            )
+
+        diff_stat = mgr.diff_stat(info)
+        diff = mgr.diff(info)
+        approved = await approval.request_approval(
+            action_type="git_merge",
+            description=(
+                f"Integrar trabajo del agente [{task_id}]: tests en verde. "
+                f"Cambios: {'; '.join(diff_stat.splitlines()[-3:]) if diff_stat else 'sin stat'}"
+            ),
+            payload=f"{diff_stat}\n\n{diff}",
+            timeout=300.0,
+        )
+
+        if not approved:
+            return (
+                f"El usuario rechazó la integración. El trabajo se conserva en {info.path} "
+                f"(rama {info.branch}) por si quieres revisarlo luego."
+            )
+
+        ok, msg = mgr.merge_back(info)
+        if not ok:
+            return f"⚠️ {msg} La rama {info.branch} quedó conservada para resolución manual."
+
+        reload_cb = self.tools.reload_callback
+        recarga = ""
+        if reload_cb:
+            try:
+                n = reload_cb()
+                recarga = f" Plugins recargados en caliente ({n} herramientas)."
+            except Exception as e:
+                recarga = f" (la recarga en caliente falló: {e})"
+
+        mgr.finalize(info)
+        return f"✅ Trabajo integrado a la rama principal (tests en verde).{recarga}"
+
     async def run_task(self, instruction: str, task_id: Optional[str] = None) -> str:
-        """Bucle autónomo ReAct para resolver la instrucción."""
+        """Bucle autónomo ReAct para resolver la instrucción (aislado en worktree si es posible)."""
         task_id = task_id or str(uuid.uuid4())[:8]
         logger.info(f"🚀 [Subagente Desarrollador Iniciado] Tarea [{task_id}]: {instruction}")
 
@@ -135,12 +219,14 @@ class DeveloperAgent:
             )
         )
 
+        tools, worktree_info = self._prepare_task_tools(task_id)
+
         messages = [
             {"role": "system", "content": DEVELOPER_SYSTEM_PROMPT},
             {"role": "user", "content": instruction}
         ]
 
-        tool_defs = self.tools.get_tool_definitions()
+        tool_defs = tools.get_tool_definitions()
         iteration = 0
 
         try:
@@ -151,7 +237,7 @@ class DeveloperAgent:
                 response = await self.client.chat_completion(
                     messages=messages,
                     model=self.model,
-                    tools=tool_defs,
+                    tools=tools.get_tool_definitions(),
                     temperature=0.2
                 )
 
@@ -173,6 +259,10 @@ class DeveloperAgent:
                 # Si el modelo no pide más herramientas, ha finalizado su tarea
                 if not tool_calls:
                     final_result = content or "Tarea completada exitosamente."
+                    if worktree_info is not None:
+                        closure = await self._finalize_worktree(worktree_info, task_id)
+                        final_result = f"{final_result}\n\n{closure}"
+                        worktree_info = None  # ya gestionado
                     logger.info(f"✅ [Subagente Tarea Completada] [{task_id}]: {final_result[:100]}...")
 
                     self.event_bus.publish(
@@ -196,7 +286,7 @@ class DeveloperAgent:
                         fn_args = {}
 
                     logger.info(f"🔧 [Subagente Tool Call]: {fn_name}({fn_args})")
-                    tool_output = str(await self.tools.execute_tool(fn_name, fn_args))
+                    tool_output = str(await tools.execute_tool(fn_name, fn_args))
 
                     # Truncar outputs gigantes: un 'cat' de un archivo grande o un
                     # pytest verboso puede inflar el contexto por iteración (costo/latencia)
@@ -217,6 +307,10 @@ class DeveloperAgent:
 
             # Excedió límite de iteraciones
             timeout_msg = f"Se alcanzó el límite máximo de iteraciones ({self.max_iterations})."
+            if worktree_info is not None:
+                # Conservar el trabajo parcial para inspección; no integrar.
+                timeout_msg += f" El trabajo parcial quedó en {worktree_info.path} (rama {worktree_info.branch})."
+                worktree_info = None
             self.event_bus.publish(
                 TaskCompleted(
                     ConversationContext(),
@@ -267,4 +361,7 @@ class DeveloperAgent:
             )
             return err_msg
         finally:
+            # Limpieza defensiva: un worktree cuyo flujo terminó en excepción no
+            # debe quedar reservado para siempre en _active (su rama/worktree físico
+            # se conserva para inspección; cleanup_stale() lo recoge más tarde).
             self._active_tasks.pop(task_id, None)

@@ -14,26 +14,35 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 class AgentCodeTools:
     """
     Herramientas de inspección, desarrollo y pruebas para el subagente de programación.
-    Toda modificación de archivo o ejecución de comando pasa por la compuerta HITL (ApprovalManager).
+
+    Dos modos de operación:
+    - Modo directo (por defecto): raíz = proyecto; escrituras y comandos pasan por HITL.
+    - Modo worktree (project_root=<worktree>, require_write_approval=False): las
+      escrituras corren aisladas y se revisan UNA sola vez al final vía diff + pytest;
+      los comandos shell SIGUEN requiriendo HITL (afectan al sistema real, no al sandbox).
     """
 
-    def __init__(self, approval_manager: ApprovalManager, reload_callback=None):
+    def __init__(self, approval_manager: ApprovalManager, reload_callback=None,
+                 project_root: Optional[str] = None, require_write_approval: bool = True):
         self.approval_manager = approval_manager
         self.reload_callback = reload_callback
+        # La raíz puede ser un worktree aislado (Fase 3); por defecto el proyecto real
+        self.project_root = os.path.abspath(project_root) if project_root else _PROJECT_ROOT
+        self.require_write_approval = require_write_approval
+        # El venv vive SIEMPRE fuera del worktree (compartido, en el repo principal)
         self._venv_bin = os.path.join(_PROJECT_ROOT, "venv", "bin")
 
-    @staticmethod
-    def _resolve_project_path(ruta_relativa: str) -> Optional[str]:
+    def _resolve_project_path(self, ruta_relativa: str) -> Optional[str]:
         """
-        Resuelve una ruta relativa confinándola estrictamente al directorio del
-        proyecto (path jail). Devuelve None si intenta escapar (ej: ../../etc/passwd).
+        Resuelve una ruta relativa confinándola estrictamente a la raíz activa
+        (proyecto o worktree). Devuelve None si intenta escapar (path jail).
         """
         rel = (ruta_relativa or "").strip()
         if os.path.isabs(rel):
-            return None  # Rutas absolutas prohibidas: solo rutas relativas al proyecto
-        abs_path = os.path.realpath(os.path.join(_PROJECT_ROOT, rel.lstrip("/")))
+            return None  # Rutas absolutas prohibidas: solo rutas relativas a la raíz
+        abs_path = os.path.realpath(os.path.join(self.project_root, rel.lstrip("/")))
         try:
-            if os.path.commonpath([abs_path, _PROJECT_ROOT]) != _PROJECT_ROOT:
+            if os.path.commonpath([abs_path, self.project_root]) != self.project_root:
                 return None
         except ValueError:
             return None  # Paths en unidades/raíces distintas
@@ -221,27 +230,46 @@ class AgentCodeTools:
                     return f.read()
 
             elif name == "escribir_archivo":
-                ruta_rel = args.get("ruta_relativa", "").lstrip("/")
+                ruta_raw = args.get("ruta_relativa", "")
+                if os.path.isabs(ruta_raw):
+                    return f"Error: Ruta absoluta '{ruta_raw}' no permitida; usa rutas relativas al proyecto."
+                ruta_rel = ruta_raw.lstrip("/")
                 contenido = args.get("contenido", "")
                 ruta_abs = self._resolve_project_path(ruta_rel)
                 if ruta_abs is None:
                     return f"Error: Ruta '{ruta_rel}' fuera del directorio del proyecto (bloqueado por seguridad)."
 
-                desc = f"Crear/modificar archivo: {ruta_rel} ({len(contenido)} caracteres)"
-                # Solicitar aprobación humana (HITL) con 120s de margen
-                approved = await self.approval_manager.request_approval(
-                    action_type="file_write",
-                    description=desc,
-                    payload=contenido,
-                    timeout=120.0
-                )
-                if not approved:
-                    return f"Acción rechazada por el usuario: No se permitió escribir '{ruta_rel}'."
+                if self.require_write_approval:
+                    desc = f"Crear/modificar archivo: {ruta_rel} ({len(contenido)} caracteres)"
+                    # Solicitar aprobación humana (HITL) con 120s de margen
+                    approved = await self.approval_manager.request_approval(
+                        action_type="file_write",
+                        description=desc,
+                        payload=contenido,
+                        timeout=120.0
+                    )
+                    if not approved:
+                        return f"Acción rechazada por el usuario: No se permitió escribir '{ruta_rel}'."
+                else:
+                    # Modo worktree: escritura aislada; la revisión humana ocurre
+                    # UNA vez al final, sobre el diff completo antes del merge.
+                    logger.info(f"✍️ [worktree] Escritura aislada sin HITL intermedio: {ruta_rel}")
 
                 os.makedirs(os.path.dirname(ruta_abs), exist_ok=True)
                 with open(ruta_abs, "w", encoding="utf-8") as f:
                     f.write(contenido)
-                return f"Archivo '{ruta_rel}' escrito exitosamente tras aprobación del usuario."
+                return f"Archivo '{ruta_rel}' escrito exitosamente."
+
+            elif name == "ejecutar_pruebas_pytest":
+                res = subprocess.run(
+                    [os.path.join(_PROJECT_ROOT, "venv", "bin", "pytest"), "-q"],
+                    cwd=self.project_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=180
+                )
+                output = res.stdout or res.stderr
+                return output[-4000:] if len(output) > 4000 else output
 
             elif name == "listar_directorio":
                 ruta_rel = args.get("ruta_relativa", ".").lstrip("/")
@@ -285,23 +313,13 @@ class AgentCodeTools:
                 res = subprocess.run(
                     cmd,
                     shell=True,
-                    cwd=_PROJECT_ROOT,
+                    cwd=self.project_root,
                     capture_output=True,
                     text=True,
                     timeout=60
                 )
                 output = res.stdout if res.returncode == 0 else f"Fallo (código {res.returncode}):\n{res.stderr}\n{res.stdout}"
                 return output if output.strip() else "Comando completado sin salida."
-
-            elif name == "ejecutar_pruebas_pytest":
-                res = subprocess.run(
-                    ["./venv/bin/pytest", "-v"],
-                    cwd=_PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                    timeout=45
-                )
-                return res.stdout if res.stdout else res.stderr
 
             elif name == "recargar_plugins_atlas":
                 if self.reload_callback:
