@@ -150,8 +150,8 @@ class OptimizedScreenCaptureService(ScreenCapture):
             logger.warning(f"gdbus portal screenshot falló: {proc.stderr}")
             return None
 
-        # Esperar que el archivo se escriba en el disco
-        time.sleep(0.3)
+        # Esperar a que GNOME escriba el archivo (primera sonda temprana)
+        time.sleep(0.15)
 
         # Buscar el screenshot más reciente generado después de t_before
         candidates = []
@@ -171,8 +171,10 @@ class OptimizedScreenCaptureService(ScreenCapture):
             candidates.sort(key=lambda x: x[0], reverse=True)
             latest_path = candidates[0][1]
             
-            # Reintentar hasta 4 veces con pausas breves para dar tiempo a que GNOME termine de escribir el archivo
-            for _ in range(4):
+            # GNOME puede tardar >1s en materializar el PNG; ventana total ~3s
+            # (12 reintentos x 0.25s). Verificado en vivo 2026-09-14: con solo
+            # 4x0.15s la lectura fallaba y se caía a una captura negra de mss.
+            for _ in range(12):
                 try:
                     if os.path.exists(latest_path) and os.path.getsize(latest_path) > 1000:
                         img = Image.open(latest_path)
@@ -180,7 +182,7 @@ class OptimizedScreenCaptureService(ScreenCapture):
                         return img
                 except Exception:
                     pass
-                time.sleep(0.15)
+                time.sleep(0.25)
 
             logger.error(f"No se pudo leer la captura de portal en {latest_path} tras reintentos.")
 

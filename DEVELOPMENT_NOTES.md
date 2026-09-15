@@ -4,6 +4,23 @@ Este documento registra los problemas arquitectónicos, optimizaciones de bajo n
 
 ---
 
+## 21. Computer-Use Fase 0+1: Cadena de Input, Sonda DGRAM, Portal RemoteDesktop y Resolver SoM (2026-09-14)
+
+- **Contexto**: Implementación de `COMPUTER_USE_PLAN.md`. Ver detalle completo ahí.
+- **Síntoma 1 (falso positivo)**: El health-check marcaba ydotool como operativo porque `/run/user/<uid>/.ydotool_socket` existía en disco, pero el daemon llevaba muerto desde hacía días (socket obsoleto).
+- **Causa Raíz 1**: El socket de `ydotoold` es **DGRAM (u_dgr)**, no STREAM: no se puede sondear "conectando" (un connect a DGRAM no valida que haya daemon). 
+- **Solución**: El check correcto es **archivo de socket presente + proceso `ydotoold` vivo en `/proc`** (`src/input/backends.py: process_alive`). El auto-fix (`systemctl --user start ydotoold.service`) vive en `src/input/health.py` y corre en el arranque de `jarvis.py`, con sondeo reintentado hasta 1.5s tras el arranque (el daemon tarda unos ms en bind-ear).
+- **Síntoma 2 (captura negra)**: La captura por portal XDG fallaba leyendo el PNG antes de que GNOME lo materializara (solo 0.9s de ventana de reintento) y caía silenciosamente al fallback `mss`, que en Wayland devuelve **pantalla negra** (~6KB JPEG).
+- **Solución 2**: Ventana de reintento ampliada a ~3s (12×0.25s) en `OptimizedScreenCaptureService._capture_wayland_portal`. La captura real pasó de fallar a **~270-790ms con 79-86KB reales**.
+- **Nuevos subsistemas**:
+  - `src/security/policy.py` + `config/security_policy.yaml`: clasificación de acciones en 3 tiers (read_only / local_write / irreversible) por nombre (fnmatch) + **escalación por contenido** (regex sobre payload: pagos, `rm -rf`, `sudo`, `git push`, tarjetas). Tier 3 siempre HITL.
+  - `src/input/`: `YdotoolBackend`, `RemoteDesktopPortalBackend` (XDG Portal RemoteDesktop nativo en GNOME 45+, con restore_token persistido en `~/.config/atlas/portal_restore_token`, 0600) e `InputRouter` con fallback automático entre backends.
+  - `src/input/resolver.py`: `ElementResolver` AT-SPI2→SoM→coords con matching por palabras no contiguas (las consultas de voz rara vez coinciden literalmente con el label).
+  - `src/plugins/gui_actions/`: herramienta `interactuar_gui` (click/doble_click/escribir/tecla/leer) que prioriza acciones semánticas AT-SPI2 (sin robar foco) sobre inyección de coordenadas, verifica con frame-diff, y devuelve candidatos cuando no encuentra el objetivo (autocorrección del LLM).
+- **Benchmark falsable** (`tests/computer_use/`): 4 sondas pasivas. Estado inicial real: 4/4 (100%): cadena input OK, 8-11 apps en AT-SPI2, 60 elementos resolubles, captura <800ms. Correr con `./venv/bin/python -m tests.computer_use.runner` o `ATLAS_DESKTOP_TESTS=1 ./venv/bin/pytest tests/computer_use/`.
+
+---
+
 ## 1. Supresión de Errores C de ALSA y PortAudio (Linux PCM Underruns)
 - **Síntoma:** Aparecían mensajes repetitivos en la consola como `ALSA lib pcm.c:8787:(snd_pcm_recover) [error.pcm] underrun occurred` y `Expression 'res' failed in 'src/hostapi/alsa/pa_linux_alsa.c'`.
 - **Causa Raíz:** Las librerías de bajo nivel en C (`libasound.so.2` y PortAudio) escriben advertencias directamente a `stderr` de C en lugar de usar el logging de Python.

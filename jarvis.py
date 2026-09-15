@@ -107,6 +107,14 @@ if __name__ == "__main__":
     # Cargar plugins locales dinámicamente
     discover_and_register_plugins(registry, dependencies)
 
+    # Diagnóstico de la cadena de input GUI (Fase 0 - COMPUTER_USE_PLAN.md):
+    # detecta y auto-repara ydotoold caído antes de que falle una automatización.
+    try:
+        from src.input.health import log_startup_report
+        log_startup_report()
+    except Exception as e:
+        logger.debug(f"Health-check de input no disponible: {e}")
+
     # Gestor de servidores MCP (Model Context Protocol)
     mcp_manager = MCPServerManager()
 

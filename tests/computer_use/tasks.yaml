@@ -1,0 +1,31 @@
+# Mini-benchmark de computer-use de Atlas (ver COMPUTER_USE_PLAN.md, Fase 0).
+#
+# Estas pruebas miden la SALUD DE LA CADENA de automatización (pasivas, sin efectos
+# sobre el escritorio). Son el suelo mínimo que cualquier claim de "computer use"
+# debe superar antes de hablar de benchmarks externos.
+#
+# Ejecución manual:
+#   ./venv/bin/python -m tests.computer_use.runner
+#   ./venv/bin/python -m tests.computer_use.runner --json
+#
+# En pytest están protegidas: solo corren con ATLAS_DESKTOP_TESTS=1.
+
+pruebas:
+  - id: health_chain
+    nombre: "Cadena de input íntegra (backend + AT-SPI2 + wl-copy)"
+    sonda: health
+
+  - id: atspi_apps
+    nombre: "Aplicaciones registradas en el bus AT-SPI2"
+    sonda: atspi_apps
+    min_apps: 3
+
+  - id: elementos_interactivos
+    nombre: "Elementos interactivos resolubles con bounds"
+    sonda: elementos
+    min_elementos: 5
+
+  - id: captura_rapida
+    nombre: "Captura de pantalla por debajo del presupuesto de latencia"
+    sonda: captura
+    max_ms: 2000

@@ -1,0 +1,60 @@
+# 🛡️ Política de seguridad por tiers de Atlas (ver src/security/policy.py)
+#
+# Tier 1 (read_only):   lectura pasiva -> auto-aprobada
+# Tier 2 (local_write): escritura local reversible -> aprobación según herramienta
+# Tier 3 (irreversible): enviar mensajes, borrar, shell arbitrario -> HITL SIEMPRE
+#
+# Los patrones usan sintaxis glob (fnmatch) contra el NOMBRE de la acción/herramienta.
+# La escalación por contenido (escalation_patterns) inspecciona el payload y siempre gana.
+
+default_tier: 2
+
+tiers:
+  read_only:
+    - "analizar_pantalla"
+    - "capturar_pantalla*"     # incluye capturar_pantalla_desarrollo del subagente
+    - "leer_archivo"
+    - "listar_directorio"
+    - "buscar_*"
+    - "consultar_*"
+    - "obtener_*"
+    - "listar_*"
+    - "leer_*"
+    - "que_suena"
+    - "ver_*"
+
+  local_write:
+    - "interactuar_gui"        # contenido sensible eleva a tier 3 automáticamente
+    - "abrir_*"
+    - "cerrar_aplicacion"
+    - "reproducir_*"
+    - "controlar_musica"
+    - "escribir_archivo"       # el propio AgentCodeTools ya pide HITL con diff
+    - "crear_*"
+    - "editar_*"
+    - "ajustar_*"
+    - "silenciar*"
+    - "imprimir_en_consola"
+    - "agendar_*"
+    - "crear_recordatorio"
+
+  irreversible:
+    - "enviar_*"               # mensajes WhatsApp/Telegram, correos...
+    - "*correo*"
+    - "ejecutar_comando*"      # shell del subagente (ya pasa por HITL)
+    - "ejecutar_shell*"
+    - "proponer_comando"
+    - "git_push"
+    - "borrar_*"
+    - "eliminar_*"
+    - "pagar*"
+
+# Patrones sobre el CONTENIDO (regex, case-insensitive) que elevan cualquier
+# acción a Tier 3 aunque su nombre parezca inofensivo.
+escalation_patterns:
+  - '\brm\s+-rf?\b'
+  - '\bsudo\b'
+  - '\bgit\s+push\b'
+  - '\b(cvv|tarjeta|card\s*number|\d{13,16})\b'
+  - '(confirmar\s+compra|realizar\s+pago|transferencia)'
+  - '(eliminar\s+todo|borrar\s+todo|formatear)'

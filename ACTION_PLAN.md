@@ -18,6 +18,11 @@ Este documento registra el roadmap técnico, las fases ejecutadas y el estado de
 | **Fase 8: Multi-Agente Auto-Evolutivo** | ✅ Completado | Subagente Desarrollador (`gemini-3.7-flash-high` vía CLIProxyAPI Oracle), compuerta HITL y Hot-Reloading. |
 | **Fase 9: Búsqueda Multi-Motor & Deep Research** | ✅ Completado | Jerarquía con fallback Google Grounding → Tavily → DuckDuckGo + Motor Deep Research de 4 fases. |
 | **Fase 10: Interacción Terminal Unificada** | ✅ Completado | `TerminalInteractionManager` con prompts libres, edición inline (flechas), historial, atajos de 1 tecla (Tab/Shift+Espacio) y aprobación HITL. |
+| **Computer-Use Fase 0: Fundaciones** | ✅ Completado | Health-check de input con auto-reparación de ydotoold (sonda /proc, no socket), política de riesgo por tiers (`config/security_policy.yaml`), mini-benchmark falsable `tests/computer_use/` (4/4 en vivo). |
+| **Computer-Use Fase 1: Capa de Acción Unificada** | ✅ Completado | `InputRouter` (ydotool → portal RemoteDesktop), backend experimental Portal con token persistente, `ElementResolver` AT-SPI2→SoM→coords, herramienta `interactuar_gui` con verificación por frame-diff. |
+| **Computer-Use Fase 2: Bucle OODA** | 🔲 Pendiente | Orquestador Observe→Decide→Act→Verify con narración por voz y cancelación por barge-in. Ver `COMPUTER_USE_PLAN.md`. |
+| **Computer-Use Fase 3: Git Worktrees** | 🔲 Pendiente | Worktree por tarea del DeveloperAgent + diff en HITL antes de merge. |
+| **Computer-Use Fase 4: Navegador CDP** | 🔲 Pendiente | Adjuntarse al Chrome/Brave real del usuario vía CDP (sesiones logueadas reales). |
 
 ---
 
