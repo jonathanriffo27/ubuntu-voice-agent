@@ -3,7 +3,8 @@ import os
 import time
 import re
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional
+from collections import deque
+from typing import Deque, Dict, Any, List, Optional, Tuple
 
 from src.tools.base import BaseTool, ToolContext, ToolResult
 
@@ -66,25 +67,47 @@ class BashExecutor(CommandExecutor):
             )
 
 class CommandState:
-    def __init__(self, timeout_seconds: int = 30):
-        self.pending_command: Optional[str] = None
-        self.pending_timestamp: float = 0
-        self.timeout_seconds = timeout_seconds
+    """
+    Cola FIFO de comandos propuestos pendientes de confirmación por voz.
 
-    def propose(self, command: str):
-        self.pending_command = command
-        self.pending_timestamp = time.time()
+    Antes era un slot único: proponer un segundo comando SOBRESCRIBÍA el
+    primero en silencio (incidente: 'ls' + 'cat ~/.ssh/id_rsa' -> solo se
+    ejecutó el segundo tras un único 'apruebo'). Ahora cada propuesta se
+    encola y 'ejecutar_comando_confirmado' drena la cola en orden.
+    """
+
+    def __init__(self, timeout_seconds: int = 30, max_pending: int = 10):
+        self._queue: Deque[Tuple[str, float]] = deque()
+        self.timeout_seconds = timeout_seconds
+        self.max_pending = max_pending
+
+    def _purge_expired(self):
+        now = time.time()
+        while self._queue and now - self._queue[0][1] > self.timeout_seconds:
+            self._queue.popleft()
+
+    def propose(self, command: str) -> int:
+        """Encola un comando y devuelve el total de pendientes tras encolar."""
+        self._purge_expired()
+        if len(self._queue) >= self.max_pending:
+            self._queue.popleft()  # descarta el más antiguo: la cola no crece sin límite
+        self._queue.append((command, time.time()))
+        return len(self._queue)
 
     def get_pending(self) -> Optional[str]:
-        if not self.pending_command:
+        """Extrae el comando pendiente MÁS ANTIGUO (FIFO), o None si no hay."""
+        self._purge_expired()
+        if not self._queue:
             return None
-        if time.time() - self.pending_timestamp > self.timeout_seconds:
-            self.pending_command = None
-            return None
-        return self.pending_command
+        return self._queue.popleft()[0]
+
+    def list_pending(self) -> List[str]:
+        """Comandos pendientes en orden, sin extraerlos."""
+        self._purge_expired()
+        return [cmd for cmd, _ in self._queue]
 
     def clear(self):
-        self.pending_command = None
+        self._queue.clear()
 
 class ProponerComandoTool(BaseTool):
     def __init__(self, state: CommandState):
@@ -135,12 +158,18 @@ class ProponerComandoTool(BaseTool):
             # En un entorno sin confirmación, esto se comportaría distinto.
             pass
 
-        self.state.propose(comando)
-        print(f"\n⚠️ [ATLAS PROPONE]: {comando}\n (Esperando confirmación...)")
-        
+        pendientes = self.state.propose(comando)
+        extra = ""
+        if pendientes > 1:
+            extra = f" (encolado: hay {pendientes} comandos pendientes de confirmación)"
+        print(f"\n⚠️ [ATLAS PROPONE]: {comando}{extra}\n (Esperando confirmación...)")
+
         return ToolResult(
-            success=True, 
-            content=f"Comando '{comando}' propuesto. DETENTE AQUÍ. Espera a escuchar la confirmación por voz del usuario antes de ejecutarlo."
+            success=True,
+            content=(
+                f"Comando '{comando}' propuesto.{extra} DETENTE AQUÍ. "
+                "Espera a escuchar la confirmación por voz del usuario antes de ejecutarlo."
+            )
         )
 
 class EjecutarComandoTool(BaseTool):
@@ -169,30 +198,39 @@ class EjecutarComandoTool(BaseTool):
         if not cmd:
             print("\n❌ [ATLAS ERROR]: Se intentó confirmar sin comando pendiente o ya expiró.")
             return ToolResult(
-                success=False, 
+                success=False,
                 content="No hay un comando pendiente válido o ya expiró. Vuelve a proponerlo."
             )
 
-        self.state.clear()
         print(f"\n🚀 [EJECUTANDO]: {cmd}")
-        
+
         result = await self.executor.run(cmd)
-        
+
+        remaining = self.state.list_pending()
+        cola_msg = ""
+        if remaining:
+            cola = ", ".join(f"'{c}'" for c in remaining)
+            cola_msg = (
+                f"\n\n⏳ Quedan {len(remaining)} comando(s) pendientes en cola: {cola}. "
+                "CADA UNO requiere su propia confirmación del usuario: "
+                "pregúntale si desea ejecutar el siguiente antes de llamar de nuevo a esta herramienta."
+            )
+
         if result.exit_code == 0:
             out_text = f"Comando ejecutado correctamente. Salida:\n{result.stdout}"
             if not result.stdout.strip():
                 out_text = "Comando ejecutado correctamente (sin salida)."
             print(f"✅ Completado en {result.duration_ms}ms")
             return ToolResult(
-                success=True, 
-                content=out_text,
+                success=True,
+                content=out_text + cola_msg,
                 metadata={"exit_code": result.exit_code, "duration_ms": result.duration_ms}
             )
         else:
             out_text = f"El comando falló con código {result.exit_code}.\nError:\n{result.stderr}\nSalida:\n{result.stdout}"
             print(f"❌ Falló en {result.duration_ms}ms")
             return ToolResult(
-                success=False, 
-                content=out_text,
+                success=False,
+                content=out_text + cola_msg,
                 metadata={"exit_code": result.exit_code, "duration_ms": result.duration_ms}
             )
