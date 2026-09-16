@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 import traceback
 import uuid
 from typing import Dict, Any, List, Optional
@@ -86,6 +87,12 @@ class DeveloperAgent:
         self.max_iterations = max_iterations
         self.worktree_manager = worktree_manager
         self._active_tasks: Dict[str, asyncio.Task] = {}
+        # Historial de tareas finalizadas. Antes se eliminaba la entrada al
+        # terminar (finally: _active_tasks.pop), así que consultar_estado_tarea
+        # devolvía "not_found" para tareas YA COMPLETADAS (código muerto en las
+        # ramas task.done()). Ahora se conservan las últimas N para consulta.
+        self._task_history: Dict[str, Dict[str, Any]] = {}
+        self._max_history = 50
 
     def start_background_task(self, instruction: str) -> str:
         """Inicia una tarea en segundo plano sin bloquear el frontend de voz de Atlas."""
@@ -94,29 +101,59 @@ class DeveloperAgent:
         self._active_tasks[task_id] = task
         return task_id
 
+    def _record_history(self, task_id: str, instruction: str, status: str, detail: str) -> None:
+        """Registra el resultado final de una tarea para consultas posteriores."""
+        self._task_history[task_id] = {
+            "task_id": task_id,
+            "instruction": instruction[:120],
+            "status": status,
+            "detail": (detail or "")[:500],
+            "finished_at": time.strftime("%H:%M:%S"),
+        }
+        # FIFO acotado: nunca crece más allá de _max_history
+        while len(self._task_history) > self._max_history:
+            self._task_history.pop(next(iter(self._task_history)))
+
+    def find_similar_completed(self, instruction: str) -> Optional[Dict[str, Any]]:
+        """
+        Busca en el historial una tarea finalizada con instrucción idéntica
+        (normalizada). Sirve para detectar delegaciones duplicadas accidentales.
+        """
+        norm = " ".join(instruction.split()).strip().lower()
+        if not norm:
+            return None
+        for entry in reversed(list(self._task_history.values())):
+            past = " ".join(entry.get("instruction", "").split()).strip().lower()
+            if past and past == norm:
+                return entry
+        return None
+
     def get_task_status(self, task_id: str = None) -> dict:
         """
         Devuelve el estado real de una tarea en segundo plano.
-        Si no se pasa task_id, devuelve el estado de todas las tareas activas.
+        Consulta primero las activas y luego el historial de finalizadas.
+        Si no se pasa task_id, devuelve activas + historial reciente.
         """
         if task_id:
             task = self._active_tasks.get(task_id)
-            if not task:
-                return {"task_id": task_id, "status": "not_found", "detail": "No existe tarea activa con ese ID."}
-            if task.done():
-                try:
-                    result = task.result()
-                    return {"task_id": task_id, "status": "completed", "detail": str(result)[:500]}
-                except Exception as e:
-                    return {"task_id": task_id, "status": "error", "detail": str(e)[:500]}
-            else:
+            if task:
+                if task.done():
+                    try:
+                        result = task.result()
+                        return {"task_id": task_id, "status": "completed", "detail": str(result)[:500]}
+                    except Exception as e:
+                        return {"task_id": task_id, "status": "error", "detail": str(e)[:500]}
                 return {"task_id": task_id, "status": "running", "detail": "La tarea sigue ejecutándose."}
+            hist = self._task_history.get(task_id)
+            if hist:
+                return dict(hist)
+            return {"task_id": task_id, "status": "not_found", "detail": "No existe tarea con ese ID (ni activa ni en el historial)."}
 
-        # Sin task_id: devolver resumen de todas
-        if not self._active_tasks:
+        # Sin task_id: activas + últimas del historial
+        if not self._active_tasks and not self._task_history:
             return {"status": "no_tasks", "detail": "No hay tareas activas en segundo plano."}
 
-        result = {}
+        result: Dict[str, Any] = {}
         for tid, task in self._active_tasks.items():
             if task.done():
                 try:
@@ -126,6 +163,12 @@ class DeveloperAgent:
                     result[tid] = {"status": "error", "detail": str(e)[:200]}
             else:
                 result[tid] = {"status": "running"}
+        for tid, entry in list(self._task_history.items())[-10:]:
+            result.setdefault(
+                tid,
+                {"status": entry["status"], "detail": entry["detail"],
+                 "instruction": entry["instruction"], "finished_at": entry["finished_at"]},
+            )
         return result
 
     def _prepare_task_tools(self, task_id: str):
@@ -228,6 +271,7 @@ class DeveloperAgent:
 
         tool_defs = tools.get_tool_definitions()
         iteration = 0
+        outcome_status, outcome_detail = "error", "La tarea terminó de forma inesperada."
 
         try:
             while iteration < self.max_iterations:
@@ -273,6 +317,7 @@ class DeveloperAgent:
                             result=final_result
                         )
                     )
+                    outcome_status, outcome_detail = "completed", final_result
                     return final_result
 
                 # Ejecutar herramientas solicitadas por el modelo
@@ -319,6 +364,7 @@ class DeveloperAgent:
                     result=timeout_msg
                 )
             )
+            outcome_status, outcome_detail = "error", timeout_msg
             return timeout_msg
 
         except Exception as e:
@@ -359,9 +405,12 @@ class DeveloperAgent:
                     result=err_msg
                 )
             )
+            outcome_status, outcome_detail = "error", err_msg
             return err_msg
         finally:
             # Limpieza defensiva: un worktree cuyo flujo terminó en excepción no
             # debe quedar reservado para siempre en _active (su rama/worktree físico
             # se conserva para inspección; cleanup_stale() lo recoge más tarde).
+            # El resultado se conserva en _task_history para consultar_estado_tarea.
             self._active_tasks.pop(task_id, None)
+            self._record_history(task_id, instruction, outcome_status, outcome_detail)

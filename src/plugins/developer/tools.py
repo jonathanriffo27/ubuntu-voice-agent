@@ -41,12 +41,27 @@ class DelegarTareaDesarrolloTool(BaseTool):
             return ToolResult(success=False, content="Falta la instrucción de la tarea a delegar.")
 
         task_id = self.developer_agent.start_background_task(instruccion)
+
+        # Guardarraíl anti-duplicados: si la instrucción es idéntica a la de una
+        # tarea ya FINALIZADA, probablemente el modelo repitió los argumentos de
+        # la llamada anterior (incidente real: "corrige el typo del README" llegó
+        # como "crear hola.txt" y el subagente rehízo la tarea equivocada).
+        aviso = ""
+        dup = self.developer_agent.find_similar_completed(instruccion)
+        if dup and dup.get("task_id") != task_id:
+            aviso = (
+                f" ⚠️ AVISO: esta instrucción es IDÉNTICA a la de la tarea ya finalizada "
+                f"[{dup['task_id']}] (estado: {dup['status']}, terminó a las {dup.get('finished_at', '?')}). "
+                "Si el usuario pidió algo DISTINTO, la instrucción es probablemente errónea: "
+                "confirma con él lo que quiere realmente antes de dar esta tarea por válida."
+            )
+
         return ToolResult(
             success=True,
             content=(
                 f"Tarea de desarrollo asignada al subagente (ID: {task_id}). "
                 "Está trabajando en segundo plano con Gemini 3.7 Flash y solicitará tu aprobación "
-                "si necesita crear archivos o ejecutar comandos."
+                f"si necesita crear archivos o ejecutar comandos.{aviso}"
             )
         )
 
