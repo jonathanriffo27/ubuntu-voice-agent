@@ -85,6 +85,20 @@ Este documento registra los problemas arquitectónicos, optimizaciones de bajo n
 
 ---
 
+## 26. Latencia de Búsquedas: Circuito Rápido ante Timeout/Red en Google Grounding (2026-09-16)
+
+- **Síntoma** (sesión real del usuario): las búsquedas por voz tardaban varios segundos aunque Tavily respondía bien.
+- **Causa Raíz**: `GoogleGroundingSearchEngine` intentaba siempre Google primero y un **timeout no bloqueaba el modelo** (diseño anterior: "lentitud transitoria"). Con Google lento/caído, cada búsqueda pagaba `timeout(5s) × Nº modelos` — hasta ~15s — antes de caer a Tavily. Solo el 429 (cuota) tenía cooldown.
+- **Solución** (`src/plugins/browser/engines/google_grounding.py`):
+  - Timeout → cooldown de **4 min** para ese modelo y **corte de la rotación** (un timeout caído afecta a todos los modelos igual: rotar solo multiplica la espera).
+  - Errores de red (ConnectionError/OSError/`Connect`/`Socket`/`Timeout` en el nombre) → mismo tratamiento.
+  - 429 mantiene su cooldown de 30 min **con** rotación (cada modelo tiene cuota propia).
+  - El estado bloqueado persiste en disco como antes (incluye ahora los bloqueos por timeout).
+- **Efecto**: tras un fallo de red, las búsquedas siguientes saltan Google en ~0ms durante 4 min → respuesta por Tavily/DDG en <2s. Tras el cooldown, un solo sondeo reintenta Google (auto-recuperación barata).
+- Suite: 391 tests.
+
+---
+
 ## 1. Supresión de Errores C de ALSA y PortAudio (Linux PCM Underruns)
 - **Síntoma:** Aparecían mensajes repetitivos en la consola como `ALSA lib pcm.c:8787:(snd_pcm_recover) [error.pcm] underrun occurred` y `Expression 'res' failed in 'src/hostapi/alsa/pa_linux_alsa.c'`.
 - **Causa Raíz:** Las librerías de bajo nivel en C (`libasound.so.2` y PortAudio) escriben advertencias directamente a `stderr` de C en lugar de usar el logging de Python.

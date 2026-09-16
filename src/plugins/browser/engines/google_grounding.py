@@ -14,9 +14,14 @@ _STATE_PATH = os.path.expanduser("~/.cache/atlas/google_grounding_state.json")
 class GoogleGroundingSearchEngine(BaseSearchEngine):
     """
     Motor primario oficial de Google Search Grounding usando el SDK oficial de Gemini (google-genai).
-    Rota entre modelos compatibles con grounding y cortocircuita automáticamente
-    si se agota la cuota gratuita diaria (HTTP 429), delegando a Tavily/DuckDuckGo
-    sin penalizar la latencia de las búsquedas siguientes.
+    Rota entre modelos compatibles con grounding y cortocircuita automáticamente:
+    - Cuota agotada (429/RESOURCE_EXHAUSTED): ese modelo se pausa 30 min y se
+      rota al siguiente (cada modelo tiene cuota propia).
+    - Timeout o error de red: ese modelo se pausa 4 min y NO se sigue rotando
+      (un timeout casi siempre es la red, común a todos los modelos) — esto
+      evita pagar N×timeout antes de caer a Tavily/DuckDuckGo.
+    Sin estos cortocircuitos, cada búsqueda con Google caído costaba hasta
+    15s de espera improductiva.
     """
 
     # Orden de preferencia: más reciente primero, clásico estable como último recurso
@@ -28,6 +33,12 @@ class GoogleGroundingSearchEngine(BaseSearchEngine):
 
     # Si todos los modelos agotan cuota (429), no reintentar hasta pasado este lapso
     QUOTA_COOLDOWN_SECONDS = 1800  # 30 min
+
+    # Cooldown corto para timeout/errores de conexión: un timeout casi siempre
+    # indica red lenta o caída (afecta igual a todos los modelos), no algo que
+    # se resuelva en milisegundos. Sin esto, CADA búsqueda pagaba hasta
+    # timeout x N_modelos antes de caer a Tavily — la lentitud que se percibía.
+    TIMEOUT_COOLDOWN_SECONDS = 240  # 4 min
 
     def __init__(self, model: Optional[str] = None, timeout: float = 5.0):
         self.timeout = timeout
@@ -134,6 +145,15 @@ class GoogleGroundingSearchEngine(BaseSearchEngine):
             success=True
         )
 
+    @staticmethod
+    def _is_connection_error(exc: Exception) -> bool:
+        """Heurística: error de red (DNS, socket, TLS, connect) que afectaría
+        igual a todos los modelos → no merece rotar."""
+        if isinstance(exc, (ConnectionError, OSError)):
+            return True
+        name = type(exc).__name__
+        return any(tag in name for tag in ("Connect", "Socket", "Timeout", "Network"))
+
     async def search(self, query: str, max_results: int = 4) -> SearchResponse:
         if not os.environ.get("GEMINI_API_KEY"):
             return SearchResponse(query=query, success=False, error="GEMINI_API_KEY no configurada.", engine_used=self.name)
@@ -141,7 +161,7 @@ class GoogleGroundingSearchEngine(BaseSearchEngine):
         now = time.time()
 
         # Rotación de modelos: el preferido primero, saltando los que agotaron
-        # su cuota recientemente (cada 429 bloquea ese modelo por 30 min).
+        # su cuota recientemente (429 = 30 min) o fallaron de red (4 min).
         ordered = [self.model] + [m for m in self.MODEL_CANDIDATES if m != self.model]
         models_to_try = [
             m for m in ordered if now >= self._model_blocked_until.get(m, 0.0)
@@ -169,8 +189,16 @@ class GoogleGroundingSearchEngine(BaseSearchEngine):
                     return result
                 errors.append(f"{model}: respuesta vacía")
             except asyncio.TimeoutError:
+                # Cooldown corto + NO seguir rotando: tras un timeout, los demás
+                # modelos casi seguro comparten el mismo problema de red.
+                self._model_blocked_until[model] = now + self.TIMEOUT_COOLDOWN_SECONDS
+                self._save_state()
                 errors.append(f"{model}: timeout ({self.timeout}s)")
-                logger.debug(f"Google Grounding timeout con {model} tras {time.time()-t0:.1f}s")
+                logger.info(
+                    f"Google Grounding timeout con {model}; modelo pausado "
+                    f"{self.TIMEOUT_COOLDOWN_SECONDS // 60} min y delegando a fallbacks."
+                )
+                break
             except Exception as e:
                 err = str(e)
                 if "429" in err or "RESOURCE_EXHAUSTED" in err:
@@ -185,6 +213,13 @@ class GoogleGroundingSearchEngine(BaseSearchEngine):
                     available = [m for m in self.MODEL_CANDIDATES if self._model_blocked_until.get(m, 0.0) <= now]
                     if not available:
                         logger.warning("Google Grounding sin cuota disponible en ningún modelo; usando fallbacks.")
+                elif self._is_connection_error(e):
+                    # Error de red genérico: mismo tratamiento que el timeout
+                    self._model_blocked_until[model] = now + self.TIMEOUT_COOLDOWN_SECONDS
+                    self._save_state()
+                    errors.append(f"{model}: sin conexión ({type(e).__name__})")
+                    logger.info(f"Google Grounding: error de red con {model} ({e}); pausado 4 min.")
+                    break
                 else:
                     errors.append(f"{model}: {type(e).__name__} {err[:120]}")
                     logger.debug(f"Google Grounding fallo con {model}: {e}")

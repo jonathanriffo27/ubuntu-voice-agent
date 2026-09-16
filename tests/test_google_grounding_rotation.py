@@ -65,17 +65,82 @@ async def test_todos_bloqueados_responde_instantaneamente(engine):
 
 
 @pytest.mark.asyncio
-async def test_timeout_modelo_no_lo_bloquea(engine, monkeypatch):
-    asyncio_ = pytest.importorskip("asyncio")
+async def test_timeout_bloquea_modelo_y_no_rota(engine, monkeypatch):
+    """
+    Un timeout casi siempre es la red lenta/caída, no el modelo. Política:
+    cooldown corto (4 min) para ese modelo y NO seguir probando los demás
+    (pagar 5s por modelo en la misma red no tiene sentido).
+    """
+    import asyncio as aio
+    import time
+
+    llamados = []
 
     async def fake_try(query, model, max_results):
-        raise asyncio_.TimeoutError()
+        llamados.append(model)
+        raise aio.TimeoutError()
 
     monkeypatch.setattr(engine, "_try_model", fake_try)
     res = await engine.search("clima")
+
     assert res.success is False
-    # Timeout => no se bloquea el modelo (podría ser lentitud transitoria)
-    assert engine._model_blocked_until == {}
+    assert llamados == [engine.model]  # NO rotó a los otros modelos
+    assert engine._model_blocked_until[engine.model] > time.time() + 60
+
+
+@pytest.mark.asyncio
+async def test_bloqueo_por_timeout_se_salta_en_la_siguiente_busqueda(engine, monkeypatch):
+    """La 2ª búsqueda tras un timeout no vuelve a pagar el modelo caído."""
+    import asyncio as aio
+
+    llamados = []
+
+    async def fake_try(query, model, max_results):
+        llamados.append(model)
+        if model == engine.MODEL_CANDIDATES[0]:
+            raise aio.TimeoutError()
+        return SearchResponse(query=query, answer="ok", success=True, engine_used="google_grounding")
+
+    monkeypatch.setattr(engine, "_try_model", fake_try)
+    await engine.search("primera")          # modelo0 timeout → bloqueado
+    llamados.clear()
+    res = await engine.search("segunda")    # debe empezar por modelo1
+    assert res.success is True
+    assert engine.MODEL_CANDIDATES[0] not in llamados
+
+
+@pytest.mark.asyncio
+async def test_error_de_conexion_bloquea_y_no_rota(engine, monkeypatch):
+    """Errores tipo DNS/socket/connect: mismo tratamiento que timeout."""
+
+    async def fake_try(query, model, max_results):
+        raise ConnectionError("DNS no resuelve generativelanguage.googleapis.com")
+
+    monkeypatch.setattr(engine, "_try_model", fake_try)
+    res = await engine.search("noticias")
+    assert res.success is False
+    assert engine.model in engine._model_blocked_until  # cooldown aplicado
+    assert "conexión" in (res.error or "")
+
+
+@pytest.mark.asyncio
+async def test_cooldown_expira_y_reintenta(engine, monkeypatch):
+    """Pasado el cooldown, el modelo vuelve a intentarse (recuperación)."""
+    import time
+
+    llamados = []
+    modelo = engine.model
+    # Bloqueo ya expirado (timestamp en el pasado)
+    engine._model_blocked_until[modelo] = time.time() - 1
+
+    async def fake_try(query, m, max_results):
+        llamados.append(m)
+        return SearchResponse(query=query, answer="ok", success=True, engine_used="google_grounding")
+
+    monkeypatch.setattr(engine, "_try_model", fake_try)
+    res = await engine.search("recuperación")
+    assert res.success is True
+    assert llamados == [modelo]
 
 
 @pytest.mark.asyncio
