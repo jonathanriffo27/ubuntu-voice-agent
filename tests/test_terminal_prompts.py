@@ -21,6 +21,53 @@ async def test_terminal_prompt_sending():
 
 
 @pytest.mark.asyncio
+async def test_prompt_repetido_en_ventana_corta_se_ignora():
+    """Incidente: mismo prompt enviado 3 veces durante una reconexión."""
+    mock_assistant = MagicMock()
+    mock_assistant.send_text_message = AsyncMock()
+    manager = TerminalInteractionManager(assistant=mock_assistant)
+
+    for _ in range(3):
+        manager._buffer = list("haz click en ensayo clinico")
+        await manager._handle_enter()
+
+    # Solo el primer envío llega a Gemini; los repetidos se ignoran
+    mock_assistant.send_text_message.assert_called_once_with("haz click en ensayo clinico")
+    # El prompt SÍ queda registrado una sola vez en el historial
+    assert manager._history == ["haz click en ensayo clinico"]
+
+
+@pytest.mark.asyncio
+async def test_prompt_repetido_tras_la_ventana_si_se_envia():
+    mock_assistant = MagicMock()
+    mock_assistant.send_text_message = AsyncMock()
+    manager = TerminalInteractionManager(assistant=mock_assistant)
+    manager._resend_debounce_s = 0.05
+
+    manager._buffer = list("repetir esto")
+    await manager._handle_enter()
+    await asyncio.sleep(0.1)  # deja expirar la ventana de debounce
+    manager._buffer = list("repetir esto")
+    await manager._handle_enter()
+
+    assert mock_assistant.send_text_message.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_prompts_distintos_no_se_bloquean():
+    mock_assistant = MagicMock()
+    mock_assistant.send_text_message = AsyncMock()
+    manager = TerminalInteractionManager(assistant=mock_assistant)
+
+    manager._buffer = list("prompt uno")
+    await manager._handle_enter()
+    manager._buffer = list("prompt dos")
+    await manager._handle_enter()
+
+    assert mock_assistant.send_text_message.call_count == 2
+
+
+@pytest.mark.asyncio
 async def test_terminal_approval_resolution():
     mock_assistant = MagicMock()
     mock_approval = MagicMock()

@@ -41,6 +41,12 @@ class TerminalInteractionManager:
         self._history_idx: int = -1
         self._last_cursor_row: int = 0
         self._last_rendered_rows: int = 1
+        # Debounce anti-reenvío: durante reconexiones Atlas no responde y es
+        # fácil repetir Enter con el mismo prompt, enviando mensajes duplicados
+        # a Gemini (incidente: 'haz click en ensayo clinico' enviado 3 veces).
+        self._last_sent_line: str = ""
+        self._last_sent_ts: float = 0.0
+        self._resend_debounce_s: float = 2.0
 
     def _clear_input_area(self):
         """Limpia completamente todas las filas ocupadas por el buffer de entrada actual."""
@@ -225,6 +231,18 @@ class TerminalInteractionManager:
 
         # 3. Enviar prompt de texto a Atlas
         if line:
+            import time as _time
+            now = _time.monotonic()
+            if (line == self._last_sent_line
+                    and now - self._last_sent_ts < self._resend_debounce_s):
+                sys.stdout.write(
+                    f"\033[36m│\033[0m \033[2m[⏳ Ignorado: mismo prompt hace "
+                    f"{now - self._last_sent_ts:.1f}s — espera la respuesta]\033[0m\n"
+                )
+                sys.stdout.flush()
+                return
+            self._last_sent_line = line
+            self._last_sent_ts = now
             if not self._history or self._history[-1] != line:
                 self._history.append(line)
             # Reemplazar la línea tipeada en el mismo lugar sin duplicar renglón
