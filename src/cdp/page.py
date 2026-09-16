@@ -152,6 +152,11 @@ _JS_SCROLL = """
 
 _JS_READY_STATE = "document.readyState"
 
+_JS_INTERACTIVE_COUNT = (
+    "document.querySelectorAll('a,button,input,select,textarea,[role],"
+    "[contenteditable=\"true\"]').length"
+)
+
 _JS_SIGNATURE = """
 (() => location.href + '|' + document.title + '|' +
  document.querySelectorAll('a,button,input,select,textarea,[role]').length + '|' +
@@ -213,6 +218,7 @@ class PageController:
         if result.get("errorText"):
             raise CDPError(f"Navegación fallida: {result['errorText']}")
         await self._wait_ready(timeout)
+        await self._wait_dom_stable()
         self._last_snapshot_url = None  # invalidar snapshot previo
         return url
 
@@ -228,6 +234,37 @@ class PageController:
             if state in ("interactive", "complete"):
                 return
             await asyncio.sleep(0.25)
+
+    async def _wait_dom_stable(self, max_wait: float = 4.0,
+                               required_polls: int = 2,
+                               interval: float = 0.35) -> None:
+        """
+        Espera a que el DOM deje de crecer (SPAs modernos: readyState completa
+        mucho antes de que la app renderice sus controles — p.ej. Gmail muestra
+        solo la pantalla de carga). Se considera estable cuando el conteo de
+        elementos interactivos se repite en `required_polls` sondeos seguidos.
+        Si el JS no devuelve un número (navegación extraña), no bloquea.
+        """
+        import asyncio
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + max_wait
+        last = -1
+        stable = 0
+        while loop.time() < deadline:
+            try:
+                count = await self.evaluate(_JS_INTERACTIVE_COUNT, timeout=2.0)
+            except CDPError:
+                break
+            if not isinstance(count, (int, float)):
+                break
+            if count == last:
+                stable += 1
+                if stable >= required_polls:
+                    return
+            else:
+                stable = 0
+                last = count
+            await asyncio.sleep(interval)
 
     async def current_info(self) -> Dict[str, str]:
         try:
@@ -346,6 +383,7 @@ class PageController:
     async def back(self) -> None:
         await self.evaluate("history.back(); true")
         await self._wait_ready(10.0)
+        await self._wait_dom_stable()
         self._last_snapshot_url = None
 
     # ------------------------------------------------------------------

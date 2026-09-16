@@ -161,6 +161,37 @@ class TestKeysAndNav:
         with pytest.raises(CDPError, match="ERR_NAME_NOT_RESOLVED"):
             await page.navigate("https://dominio-que-no-existe.x")
 
+    async def test_navigate_espera_dom_estable(self):
+        """Reproduce el bug visto en Gmail: readyState completa antes de que el
+        SPA renderice. navigate() debe esperar a que el conteo de elementos
+        interactivos deje de crecer (2 sondeos iguales)."""
+        conn = FakeCDPConnection()
+        counts = iter([1, 3, 7, 7, 7])  # crece, crece, se estabiliza
+        conn.when_js("contenteditable", lambda _expr: next(counts))
+        page = PageController(conn=conn, session_id="S", target_id="T")
+
+        import time
+        t0 = time.monotonic()
+        await page.navigate("https://ejemplo.test", timeout=5.0)
+        elapsed = time.monotonic() - t0
+
+        count_evals = [
+            c for c in conn.calls
+            if c[0] == "Runtime.evaluate" and "contenteditable" in c[1].get("expression", "")
+        ]
+        assert len(count_evals) >= 4, "debe sondear hasta estabilidad"
+        assert elapsed >= 0.9, f"demasiado rápido ({elapsed:.2f}s), no esperó estabilidad"
+
+    async def test_navigate_no_bloquea_si_js_anomalo(self):
+        """Si el conteo no devuelve número, navigate no debe colgarse."""
+        conn = FakeCDPConnection()  # sin handler: el count cae al default None
+        page = PageController(conn=conn, session_id="S", target_id="T")
+
+        import asyncio, time
+        t0 = time.monotonic()
+        await page.navigate("https://ejemplo.test", timeout=5.0)
+        assert time.monotonic() - t0 < 2.0
+
     async def test_screenshot_decodifica_base64(self):
         page = make_page()
         data = await page.screenshot()
