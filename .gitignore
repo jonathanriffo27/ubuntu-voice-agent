@@ -14,3 +14,6 @@ last_edit.json
 
 # Worktrees aislados del DeveloperAgent (Fase 3)
 .worktrees/
+
+# Registro histórico local del benchmark computer-use (Fase 7)
+tests/computer_use/history.jsonl

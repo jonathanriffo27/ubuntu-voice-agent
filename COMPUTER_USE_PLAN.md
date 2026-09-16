@@ -139,6 +139,13 @@ flowchart TD
 - Correr el benchmark de Fase 0 en cada cambio del harness; registrar % en este documento.
 - Regla de oro: **si una mejora no sube el número, no entra.**
 
+#### Registro de mediciones (auto-generado por `tests/computer_use/runner.py`, histórico completo en `history.jsonl` local)
+
+| Fecha | Commit | % Éxito | Sondas | Notas |
+|---|---|---|---|---|
+| 2026-09-16 | `88143e0` | 85.7% | 6/7 | Primera corrida con Tier B (navegador CDP). El flujo web expuso un bug: las data-URLs de prueba se truncaban al primer `#` (fragmento). |
+| 2026-09-16 | `88143e0+fix` | **100.0%** | 7/7 | data-URLs en base64. `navegador_flujo` E2E: abrir→elementos→click→escribir→leer en 1.35s totales. |
+
 ---
 
 ## 6. Matriz comparativa final (corregida)

@@ -1,31 +1,53 @@
-# Mini-benchmark de computer-use de Atlas (ver COMPUTER_USE_PLAN.md, Fase 0).
+# Mini-benchmark de computer-use de Atlas (Fases 0 y 7 del plan).
 #
-# Estas pruebas miden la SALUD DE LA CADENA de automatización (pasivas, sin efectos
-# sobre el escritorio). Son el suelo mínimo que cualquier claim de "computer use"
-# debe superar antes de hablar de benchmarks externos.
+# Sondas PASIVAS (requiere: escritorio) + ACTIVAS SEGURAS:
+#   - requiere: navegador → corren contra una instancia HEADLESS DESECHABLE del
+#     navegador (perfil en /tmp, puerto propio): jamás tocan la sesión del usuario.
+#   - requiere: (nada) → puramente locales (sandbox bwrap, política).
 #
 # Ejecución manual:
-#   ./venv/bin/python -m tests.computer_use.runner
+#   ./venv/bin/python -m tests.computer_use.runner           # todo, con registro histórico
 #   ./venv/bin/python -m tests.computer_use.runner --json
+#   ./venv/bin/python -m tests.computer_use.runner --no-history
 #
-# En pytest están protegidas: solo corren con ATLAS_DESKTOP_TESTS=1.
+# En pytest: las sondas de escritorio solo corren con ATLAS_DESKTOP_TESTS=1.
 
 pruebas:
+  # --- Cadena base (pasivas, requieren sesión de escritorio real) ---
   - id: health_chain
     nombre: "Cadena de input íntegra (backend + AT-SPI2 + wl-copy)"
     sonda: health
+    requiere: escritorio
 
   - id: atspi_apps
     nombre: "Aplicaciones registradas en el bus AT-SPI2"
     sonda: atspi_apps
     min_apps: 3
+    requiere: escritorio
 
   - id: elementos_interactivos
     nombre: "Elementos interactivos resolubles con bounds"
     sonda: elementos
     min_elementos: 5
+    requiere: escritorio
 
   - id: captura_rapida
     nombre: "Captura de pantalla por debajo del presupuesto de latencia"
     sonda: captura
     max_ms: 2000
+    requiere: escritorio
+
+  # --- Endurecimiento (Fase 6): locales, siempre disponibles ---
+  - id: sandbox_bwrap
+    nombre: "Comandos del subagente confinados (bwrap: red off, HOME aislado)"
+    sonda: sandbox
+
+  - id: policy_tiers
+    nombre: "Política de riesgo clasifica tiers y escala por contenido"
+    sonda: policy
+
+  # --- Navegador CDP (Fase 4): activo pero confinado a headless desechable ---
+  - id: navegador_flujo
+    nombre: "Flujo CDP real: abrir → elementos → click → escribir → leer (headless desechable)"
+    sonda: navegador_flujo
+    requiere: navegador

@@ -71,6 +71,20 @@ Este documento registra los problemas arquitectónicos, optimizaciones de bajo n
 
 ---
 
+## 25. Computer-Use Fase 7: Benchmark con Tiers y Registro Histórico (2026-09-16)
+
+- **Contexto**: `COMPUTER_USE_PLAN.md` Fase 7 ("medición continua"). El benchmark de Fase 0 eran 4 sondas pasivas; sin medición activa la regla de oro ("si una mejora no sube el número, no entra") era letra muerta.
+- **Ampliación a 3 tiers** (`tests/computer_use/`):
+  - **Escritorio** (4 sondas originales, pasivas): solo con `ATLAS_DESKTOP_TESTS=1`.
+  - **Local** (nuevas): sandbox bwrap funcional (HOME aislado, red off) + política de tiers clasificando correctamente. Corren siempre en pytest.
+  - **Navegador** (nueva, *activa pero confinada*): `navegador_flujo` corre el ciclo CDP real de la Fase 4 (abrir página → snapshot → click con cambio de firma → escribir y verificar valor → leer contenido) contra una instancia headless en puerto 9223 con perfil desechable en /tmp. Mide la cadena completa sin tocar la sesión del usuario. Corre en pytest si hay binario de navegador.
+- **Bug real detectado por el benchmark**: las `data:` URLs se truncan al primer `#` (inicio de fragmento) — la página de prueba con `<a href='#'>` quedaba cortada y solo se veían 2 elementos. Solución: la página de prueba se codifica en base64. Es exactamente la clase de bug que solo sale midiendo.
+- **Registro histórico**: cada corrida manual anexa a `tests/computer_use/history.jsonl` (git-ignored, es dato local) con ts, commit, %, segundos y sondas fallidas; el runner muestra **Δ contra la corrida anterior**. La tabla de hitos se consolida en `COMPUTER_USE_PLAN.md` §Fase 7.
+- **Baseline: 100% (7/7)**, flujo navegador E2E en ~1.35s.
+- **Suite total: 388 tests** (2 nuevos wrappers pytest del benchmark).
+
+---
+
 ## 1. Supresión de Errores C de ALSA y PortAudio (Linux PCM Underruns)
 - **Síntoma:** Aparecían mensajes repetitivos en la consola como `ALSA lib pcm.c:8787:(snd_pcm_recover) [error.pcm] underrun occurred` y `Expression 'res' failed in 'src/hostapi/alsa/pa_linux_alsa.c'`.
 - **Causa Raíz:** Las librerías de bajo nivel en C (`libasound.so.2` y PortAudio) escriben advertencias directamente a `stderr` de C en lugar de usar el logging de Python.

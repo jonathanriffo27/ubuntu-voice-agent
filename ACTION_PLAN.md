@@ -25,7 +25,7 @@ Este documento registra el roadmap técnico, las fases ejecutadas y el estado de
 | **Computer-Use Fase 4: Navegador CDP** | ✅ Completado | Navegador real vía CDP sin drivers: instancia dedicada con perfil persistente (restricción Chromium 136 verificada), snapshot de elementos `[n]` determinista, `navegador_web` con tiers + spotlighting; headless desechable disponible. |
 | **Computer-Use Fase 5: Sesión headless** | ⏸️ Aplazada | Trabajo paralelo desechable (scraping/builds): requiere sway/cage + virtual pointer/keyboard wlr + bus AT-SPI propio. Esfuerzo 1-2 semanas; se activa solo si hay necesidad real. |
 | **Computer-Use Fase 6: Endurecimiento** | ✅ Completado | Sandbox `bwrap` para todo shell del subagente (red off por defecto, FS mínimo, HOME aislado, `--clearenv`), `CredentialBroker` (scrub_env + redacción de secretos en salidas al LLM), `ActionMonitor` de anomalías (ráfaga/repetición → pausa + HITL). |
-| **Computer-Use Fase 7: Medición continua** | 🔲 Pendiente | Correr `tests/computer_use/` en cada cambio del harness; registrar % en el plan. |
+| **Computer-Use Fase 7: Medición continua** | ✅ Completado | Benchmark ampliado a 7 sondas en 3 tiers (escritorio/local/navegador-headless); flujo CDP E2E medido activamente (abrir→elementos→click→escribir→leer, 1.35s); histórico `history.jsonl` con Δ contra la corrida anterior; baseline registrada: **100% (7/7)**. |
 
 ---
 
@@ -73,7 +73,7 @@ Este documento registra el roadmap técnico, las fases ejecutadas y el estado de
 ---
 
 ## 🧪 Pruebas Automatizadas
-La suite cuenta con **386 pruebas unitarias** pasando al 100% (+1 sonda en vivo opcional):
+La suite cuenta con **388 pruebas unitarias** pasando al 100% (+1 sonda en vivo opcional):
 ```bash
 ./venv/bin/pytest tests/ -v
 ```
