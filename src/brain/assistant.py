@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import sys
 import time
@@ -28,6 +29,8 @@ from src.events.base import (
 from src.events.bus import EventBus
 from src.ui.terminal_input import TerminalInteractionManager
 from src.utils.logging import get_logger
+from src.security.monitor import ActionMonitor
+from src.security.credentials import get_broker
 
 logger = get_logger("brain.assistant")
 
@@ -45,6 +48,8 @@ class Assistant:
         reminder_scheduler=None,
         approval_manager=None,
         trajectory_manager=None,
+        action_monitor: "ActionMonitor" = None,
+        credential_broker=None,
         max_reconnect_attempts: int = 5,
         reconnect_initial_backoff: float = 1.0,
         reconnect_max_backoff: float = 30.0
@@ -60,6 +65,10 @@ class Assistant:
         self.reminder_scheduler = reminder_scheduler
         self.approval_manager = approval_manager
         self.trajectory_manager = trajectory_manager
+        # Fase 6: monitor de anomalías en la secuencia de acciones y broker de
+        # credenciales para redactar secretos antes de que vuelvan al contexto.
+        self.action_monitor = action_monitor or ActionMonitor()
+        self._credential_broker = credential_broker or get_broker()
 
         self.max_reconnect_attempts = max_reconnect_attempts
         self.reconnect_initial_backoff = reconnect_initial_backoff
@@ -175,12 +184,50 @@ class Assistant:
                             tool = self.registry.get_tool(fc.name)
                             if tool:
                                 try:
+                                    # Fase 6 — Monitor de anomalías: pausa + HITL si la
+                                    # secuencia de acciones se sale de política.
+                                    try:
+                                        args_repr = json.dumps(fc.args, ensure_ascii=False, default=str)[:400]
+                                    except Exception:
+                                        args_repr = str(fc.args)[:400]
+                                    alert = self.action_monitor.record(fc.name, args_repr)
+                                    if alert:
+                                        resumed = False
+                                        if self.approval_manager:
+                                            resumed = await self.approval_manager.request_approval(
+                                                action_type="anomaly_pause",
+                                                description=(
+                                                    f"🚨 Monitor de anomalías [{alert.rule}]: {alert.reason} "
+                                                    f"Acción detenida: {fc.name}. ¿Reanudar operación normal?"
+                                                ),
+                                                payload=alert.evidence,
+                                                timeout=120.0,
+                                            )
+                                        if resumed:
+                                            self.action_monitor.reset()
+                                            logger.warning(f"🚨 Anomalía resuelta por el usuario ({alert.rule}); reanudando.")
+                                        else:
+                                            msg = (f"Pausado por el monitor de anomalías ({alert.rule}): {alert.reason} "
+                                                   "El usuario debe confirmar para continuar.")
+                                            logger.warning(f"🚨 {msg}")
+                                            self.event_bus.publish(
+                                                ToolFailed(self.conversation_context, tool_name=fc.name, error=msg)
+                                            )
+                                            responses.append(ToolResponseItem(name=fc.name, id=fc.id,
+                                                                              response={"error": msg}))
+                                            continue
+
                                     context = ToolContext(
                                         config=self.config,
                                         event_bus=self.event_bus,
                                         conversation_context=self.conversation_context
                                     )
                                     tool_result = await tool.execute(context, **fc.args)
+
+                                    # Fase 6 — Credential broker: redactar secretos del
+                                    # output antes de devolverlo al contexto del LLM.
+                                    if tool_result.content:
+                                        tool_result.content = self._credential_broker.redact(tool_result.content)
 
                                     res_dict = {"result": tool_result.content}
 

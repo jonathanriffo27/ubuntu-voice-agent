@@ -54,6 +54,23 @@ Este documento registra los problemas arquitectónicos, optimizaciones de bajo n
 
 ---
 
+## 24. Computer-Use Fase 6: Endurecimiento — Sandbox bwrap, Credential Broker y Monitor de Anomalías (2026-09-15)
+
+- **Contexto**: `COMPUTER_USE_PLAN.md` Fase 6. El subagente desarrollador ejecutaba comandos con `subprocess.run(shell=True)` heredando **todo el entorno de Atlas** (incluidas `GEMINI_API_KEY`, `TAVILY_API_KEY`...) y con acceso completo al FS del usuario.
+- **Sandbox bwrap (`src/security/sandbox.py`)**: todos los comandos del DeveloperAgent (`ejecutar_comando_desarrollo`, `ejecutar_pruebas_pytest`) corren ahora confinados:
+  - **Red OFF por defecto** (`--unshare-net`); ON solo si el comando aprobado por HITL la necesita razonablemente (`command_needs_network`: pip install/download, git clone/fetch/pull/push, curl/wget/npm...).
+  - **FS mínimo**: `/usr`, `/etc`, `/lib*` ro (con `--symlink` para los symlinks merged-usr de Debian/Ubuntu), el proyecto/worktree es el único punto escribible, `/tmp` tmpfs, `HOME=/tmp` → `~/.ssh`, `~/.aws`, `~/.gnupg` simplemente no existen para el comando.
+  - **Modo worktree (Fase 3)**: el repo principal se monta `--ro-bind` ANTES y el worktree `--bind` rw después (orden de mounts crucial) para que el venv compartido siga accesible.
+  - `--die-with-parent --new-session --unshare-pid`. El comando viaja como argumento único de `sh -c` (sin shell intermedio del lado del padre).
+  - **Bug encontrado por tests**: bwrap **propaga el entorno del padre** al hijo a menos que se use `--clearenv`; el primer diseño (pasar env limpio a `subprocess.run`) era insuficiente. Ahora `--clearenv` + `--setenv` solo con las variables limpias del broker.
+  - Degradado sin bwrap instalado: ejecución directa pero SIEMPRE con env limpio + warning en log.
+- **Credential broker (`src/security/credentials.py`)**: singleton `get_broker()` que custodia los secretos en memoria. (a) Las herramientas los piden por nombre (`broker.get`) sin exponerlos al LLM; (b) `scrub_env()` genera entornos de subproceso solo con allowlist funcional (PATH, LANG, DISPLAY...) y rechaza nombres secretos aunque se pidan explícitamente; (c) `redact()` sustituye cualquier valor secreto que aparezca en salidas antes de devolverlas al contexto del LLM (aplicado en el dispatch del Assistant y en las salidas del DeveloperAgent). Valores <8 chars no se redactan (ruido de falsos positivos).
+- **Monitor de anomalías (`src/security/monitor.py`)**: ventana deslizante de 60s sobre la secuencia de acciones del dispatch central de voz con 3 reglas: ráfaga total (≥10 acciones/60s), ráfaga de riesgo (≥5 Tier≥2/60s) y **repetición** (misma acción+payload 3 veces seguidas → anti-bucle / anti prompt-injection repetitivo). Al disparar: la acción en curso se **pausa** y pide HITL único ("anomaly_pause"); aprobación → reset; rechazo/timeout → bloqueo del turno. Inyectado en `Assistant` como dependencia opcional (tests lo sobreescriben).
+- **Verificación en vivo**: curl bloqueado sin red, `cat ~/.ssh/id_rsa` no ve nada, `env` muestra 0 secretos, escritura OK solo dentro del proyecto.
+- **Suite total tras Fase 6: 386 tests pasando** (52 nuevos: argv/sandbox real, broker, monitor).
+
+---
+
 ## 1. Supresión de Errores C de ALSA y PortAudio (Linux PCM Underruns)
 - **Síntoma:** Aparecían mensajes repetitivos en la consola como `ALSA lib pcm.c:8787:(snd_pcm_recover) [error.pcm] underrun occurred` y `Expression 'res' failed in 'src/hostapi/alsa/pa_linux_alsa.c'`.
 - **Causa Raíz:** Las librerías de bajo nivel en C (`libasound.so.2` y PortAudio) escriben advertencias directamente a `stderr` de C en lugar de usar el logging de Python.

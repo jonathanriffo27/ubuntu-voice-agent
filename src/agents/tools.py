@@ -4,6 +4,8 @@ import shlex
 import subprocess
 from typing import Dict, Any, List, Optional
 from src.security.approval import ApprovalManager
+from src.security.sandbox import BubblewrapSandbox, command_needs_network
+from src.security.credentials import get_broker
 from src.utils.logging import get_logger
 
 logger = get_logger("agents.tools")
@@ -23,7 +25,8 @@ class AgentCodeTools:
     """
 
     def __init__(self, approval_manager: ApprovalManager, reload_callback=None,
-                 project_root: Optional[str] = None, require_write_approval: bool = True):
+                 project_root: Optional[str] = None, require_write_approval: bool = True,
+                 sandbox: Optional[BubblewrapSandbox] = None):
         self.approval_manager = approval_manager
         self.reload_callback = reload_callback
         # La raíz puede ser un worktree aislado (Fase 3); por defecto el proyecto real
@@ -31,6 +34,25 @@ class AgentCodeTools:
         self.require_write_approval = require_write_approval
         # El venv vive SIEMPRE fuera del worktree (compartido, en el repo principal)
         self._venv_bin = os.path.join(_PROJECT_ROOT, "venv", "bin")
+        # Sandbox bwrap (Fase 6): se construye perezoso sobre la raíz activa,
+        # con el entorno ya limpiado por el credential broker.
+        self._sandbox = sandbox
+
+    @property
+    def sandbox(self) -> BubblewrapSandbox:
+        if self._sandbox is None:
+            # En modo worktree (Fase 3) la raíz activa es .worktrees/agent-<id>;
+            # el repo principal se monta SOLO LECTURA debajo para que el venv
+            # compartido (venv/bin/pytest) siga siendo accesible en el sandbox.
+            extra_ro = []
+            if self.project_root != _PROJECT_ROOT:
+                extra_ro.append(_PROJECT_ROOT)
+            self._sandbox = BubblewrapSandbox(
+                self.project_root,
+                env_builder=lambda: get_broker().scrub_env(),
+                extra_ro_binds=extra_ro,
+            )
+        return self._sandbox
 
     def _resolve_project_path(self, ruta_relativa: str) -> Optional[str]:
         """
@@ -261,15 +283,14 @@ class AgentCodeTools:
                 return f"Archivo '{ruta_rel}' escrito exitosamente."
 
             elif name == "ejecutar_pruebas_pytest":
-                res = subprocess.run(
-                    [os.path.join(_PROJECT_ROOT, "venv", "bin", "pytest"), "-q"],
-                    cwd=self.project_root,
-                    capture_output=True,
-                    text=True,
-                    timeout=180
+                res = self.sandbox.run(
+                    f'"{os.path.join(_PROJECT_ROOT, "venv", "bin", "pytest")}" -q',
+                    network=False,
+                    timeout=180,
                 )
                 output = res.stdout or res.stderr
-                return output[-4000:] if len(output) > 4000 else output
+                output = output[-4000:] if len(output) > 4000 else output
+                return get_broker().redact(output)
 
             elif name == "listar_directorio":
                 ruta_rel = args.get("ruta_relativa", ".").lstrip("/")
@@ -310,16 +331,13 @@ class AgentCodeTools:
                     if not approved:
                         return f"Comando rechazado por el usuario: '{cmd}' no fue ejecutado."
 
-                res = subprocess.run(
-                    cmd,
-                    shell=True,
-                    cwd=self.project_root,
-                    capture_output=True,
-                    text=True,
-                    timeout=60
-                )
+                # Sandbox bwrap (Fase 6): red OFF por defecto; ON solo si el comando
+                # aprobado lo requiere razonablemente (pip install, git clone/push...).
+                network = (not is_safe_readonly) and command_needs_network(cmd)
+                res = self.sandbox.run(cmd, network=network, timeout=60)
                 output = res.stdout if res.returncode == 0 else f"Fallo (código {res.returncode}):\n{res.stderr}\n{res.stdout}"
-                return output if output.strip() else "Comando completado sin salida."
+                output = output if output.strip() else "Comando completado sin salida."
+                return get_broker().redact(output)
 
             elif name == "recargar_plugins_atlas":
                 if self.reload_callback:
