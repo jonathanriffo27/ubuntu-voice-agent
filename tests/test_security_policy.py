@@ -50,10 +50,31 @@ class TestEscalation:
         policy = SecurityPolicy()
         assert policy.classify("interactuar_gui", "haz click en Enviar mensaje") == RiskTier.LOCAL_WRITE
 
+    def test_ruta_clave_privada_escala_a_tier3(self):
+        """Incidente real: 'cat ~/.ssh/id_rsa' no debe tratarse como lectura inocua."""
+        policy = SecurityPolicy()
+        assert policy.classify("leer_archivo", "/home/user/.ssh/id_rsa") == RiskTier.IRREVERSIBLE
+        assert policy.classify("leer_archivo", "~/.ssh/id_ed25519") == RiskTier.IRREVERSIBLE
+        assert policy.classify("proponer_comando", "cat ~/.ssh/id_rsa") == RiskTier.IRREVERSIBLE
+
+    def test_archivos_de_secretos_escalan_a_tier3(self):
+        policy = SecurityPolicy()
+        assert policy.classify("leer_archivo", ".env") == RiskTier.IRREVERSIBLE
+        assert policy.classify("leer_archivo", "config/.env.production") == RiskTier.IRREVERSIBLE
+        assert policy.classify("leer_archivo", "~/.aws/credentials") == RiskTier.IRREVERSIBLE
+        assert policy.classify("leer_archivo", "server.pem") == RiskTier.IRREVERSIBLE
+
+    def test_rutas_inocuas_no_escalan(self):
+        policy = SecurityPolicy()
+        assert policy.classify("leer_archivo", "README.md") == RiskTier.READ_ONLY
+        assert policy.classify("leer_archivo", "src/plugins/shell/tools.py") == RiskTier.READ_ONLY
+        assert policy.classify("leer_archivo", "environment.yml") == RiskTier.READ_ONLY
+
     def test_requires_hitl(self):
         policy = SecurityPolicy()
         assert policy.requires_hitl("enviar_whatsapp") is True
         assert policy.requires_hitl("analizar_pantalla") is False
+        assert policy.requires_hitl("leer_archivo", "~/.ssh/id_rsa") is True
 
 
 class TestYamlReal:
@@ -65,3 +86,10 @@ class TestYamlReal:
         assert policy.classify("analizar_pantalla") == RiskTier.READ_ONLY
         assert policy.classify("enviar_telegram") == RiskTier.IRREVERSIBLE
         assert policy.classify("interactuar_gui") == RiskTier.LOCAL_WRITE
+
+    def test_yaml_real_escala_rutas_sensibles(self):
+        """El YAML del repo (que pisa los defaults) incluye las rutas sensibles."""
+        policy = SecurityPolicy.load()
+        assert policy.classify("leer_archivo", "~/.ssh/id_rsa") == RiskTier.IRREVERSIBLE
+        assert policy.classify("leer_archivo", ".env") == RiskTier.IRREVERSIBLE
+        assert policy.classify("leer_archivo", "README.md") == RiskTier.READ_ONLY

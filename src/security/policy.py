@@ -63,6 +63,11 @@ _ESCALATION_PATTERNS = [
     r"\b(cvv|tarjeta|card\s*number|\d{13,16})\b",
     r"(confirmar\s+compra|realizar\s+pago|transferencia)",
     r"(eliminar\s+todo|borrar\s+todo|formatear)",
+    # Material criptográfico y credenciales: claves privadas, keystores, .env...
+    # (un 'leer_archivo' o 'cat' sobre estos rutas NUNCA es lectura inocua)
+    r"(\.ssh/|\.gnupg/|\.aws/|id_rsa|id_ed25519|id_ecdsa|\.pem\b|\.key\b)",
+    r"\.env\b",
+    r"(credentials\.json|client_secret|api[_-]?key\s*=|access[_-]?token\s*=)",
 ]
 
 _UNSET = object()

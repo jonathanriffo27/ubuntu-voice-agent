@@ -73,3 +73,9 @@ escalation_patterns:
   # en el navegador (el nombre del botón va en el payload de navegador_web.*)
   - '(enviar\s+(mensaje|formulario|solicitud|pago)|publicar\s+(comentario|anuncio|post))'
   - '(confirmar\s+(pedido|pago|compra)|finalizar\s+compra|passkey|cerrar\s+sesi[oó]n)'
+  # Material criptográfico y credenciales: leer ~/.ssh/id_rsa o .env NUNCA es
+  # lectura inocua aunque la herramienta sea de solo-lectura (proponer_comando,
+  # leer_archivo, navegador_web.leer...). Cubre el incidente 'cat ~/.ssh/id_rsa'.
+  - '(\.ssh/|\.gnupg/|\.aws/|id_rsa|id_ed25519|id_ecdsa|\.pem\b|\.key\b)'
+  - '\.env\b'
+  - '(credentials\.json|client_secret|api[_-]?key\s*=|access[_-]?token\s*=)'
