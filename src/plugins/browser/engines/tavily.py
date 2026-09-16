@@ -17,7 +17,13 @@ def _redact_secrets(text: str) -> str:
 
 
 class TavilySearchEngine(BaseSearchEngine):
-    """Motor de búsqueda Tavily API (Fallback 1)."""
+    """Motor de búsqueda Tavily API (Fallback 1).
+
+    MODO SNIPPETS CRUDOS: `include_answer=False` a propósito. El campo `answer`
+    de Tavily es síntesis de un LLM interno y ALUCINA (incidente 2026-09-16:
+    afirmó "Argentina ganó el Mundial 2026"; la verdad: España 1-0). La
+    síntesis para voz la hace el LLM de Atlas a partir de los snippets reales.
+    """
 
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.environ.get("TAVILY_API_KEY", "")
@@ -34,7 +40,7 @@ class TavilySearchEngine(BaseSearchEngine):
             "api_key": self.api_key,
             "query": query,
             "search_depth": "basic",
-            "include_answer": True,
+            "include_answer": False,  # respuesta sintetizada por LLM de Tavily: riesgo de alucinación
             "include_raw_content": False,
             "max_results": max_results
         }

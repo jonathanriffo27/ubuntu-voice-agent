@@ -82,7 +82,7 @@ async def test_multi_engine_search_fallback_hierarchy():
     manager.ddg_engine.search = AsyncMock(return_value=SearchResponse(query="q", results=[SearchResultItem("DDG", "url", "content", "duckduckgo")], success=True, engine_used="duckduckgo"))
     res, trail = await manager.search("q")
     assert res.engine_used == "duckduckgo"
-    assert "GOOGLE ❌ → TAVILY ❌ → DUCKDUCKGO ✅" in trail
+    assert "GOOGLE ❌ → TAVILY ❌ → EXA ❌ → DUCKDUCKGO ✅" in trail
 
 
 @pytest.mark.asyncio

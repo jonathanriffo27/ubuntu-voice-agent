@@ -99,6 +99,37 @@ Este documento registra los problemas arquitectónicos, optimizaciones de bajo n
 
 ---
 
+## 27. Freshness de Respuestas de Búsqueda: Anclaje Temporal y Detección de Obsolescencia (2026-09-16)
+
+- **Síntoma** (reporte del usuario): "quién ganó el último mundial" en sept 2026 devolvió "Argentina ganó en 2022" — respuesta ambientada pero **obsoleta** (el último mundial era el 2026).
+- **Causa Raíz**: la query salía sin ancla temporal (`ganador último mundial de futbol`) y ninguna capa validaba que el año de la respuesta encajara con "último". El motor respondía con datos viejos presentados como hecho actual.
+- **Solución** (3 capas en `MultiEngineSearchManager`, `src/plugins/browser/tools.py`):
+  1. **Anclaje temporal**: regex de marcadores relativos (último/hoy/reciente/actual/noticias/quién ganó/...). Si la query es temporal y no trae año explícito, se ancla: `"... (hoy es 16 de septiembre de 2026)"`. (Meses hardcoded en español, sin depender del locale.)
+  2. **Doble llave**: la descripción de la tool `buscar_en_internet` ahora instruye al LLM de voz a incluir el año en consultas sensibles (defensa en profundidad: si el LLM ancla bien, el manager no interviene).
+  3. **Detección de obsolescencia + reintento**: si la respuesta ganadora es temporal y solo menciona años < año actual → un reintento con `"{query} {año} últimas noticias"` vía Tavily (barato); si mejora, se usa la nueva (trail `TAVILY🔁✅ (frescura)`); si no, el answer se prefija con un **⚠️ AVISO DE ACTUALIZACIÓN** para que el LLM de voz lo transmita con cautela en vez de afirmarlo.
+- **Verificación en vivo**: la misma pregunta que falló ahora devuelve "Argentina won the 2026 FIFA World Cup" — el anclaje solo ya corrigió el caso real.
+- Suite: 412 tests (21 nuevos de freshness).
+
+---
+
+## 28. Alucinación de Tavily `answer`: Tavily en modo raw + Exa como fallback semántico (2026-09-16)
+
+- **Síntoma** (reporte del usuario): tras el fix §27, la búsqueda ya devolvía el año correcto (2026) pero el ganador era **incorrecto**: "Argentina won the 2026 FIFA World Cup". Verificado con Google Grounding/Wikipedia/ABC News: la verdad era **España 1-0 Argentina** (19-jul-2026, MetLife, gol de Ferran Torres).
+- **Causa Raíz**: el campo `answer` de la API de Tavily **es síntesis generada por un LLM interno de Tavily**, no un extracto de fuentes (documentación propia de Tavily). Tavily alucinó ganador Y fecha. Sus snippets crudos (`results[].content`), en cambio, traían el dato correcto (Wikipedia/ESPN).
+- **Investigación externa (sept 2026)**: Bing Search API fue **retirada** (ago 2025); Brave exige tarjeta en el free tier; Google Custom Search cerrado a nuevos registros y muere enero 2027; Jina `s.jina.ai` devuelve 401 sin key; **Exa** ofrece ~1400 búsquedas/mes gratis sin tarjeta y devuelve texto crudo parseado.
+- **Cambios** en `src/plugins/browser/`:
+  - **Tavily → modo raw**: `include_answer=False`. Atlas deja de consumir la síntesis alucinable; solo se usan snippets de fuentes reales; la síntesis para voz la hace el LLM principal de Atlas (Gemini Live) a partir de esos snippets.
+  - **Nuevo motor `ExaSearchEngine`** (`engines/exa.py`): activo solo si existe `EXA_API_KEY` (tier gratuito sin tarjeta). Devuelve texto crudo (`contents.text`), nunca síntesis.
+  - **Cadena de fallback ampliada**: Google Grounding → Tavily(raw) → **Exa** → DuckDuckGo, con los 3 fallbacks en paralelo y elección por prioridad.
+  - **Freshness sobre snippets**: la verificación de obsolescencia de §27 ahora evalúa `answer` O el blob de los 3 snippets superiores (en modo raw no hay `answer`).
+- **Regla arquitectónica adoptada**: **nunca confiar respuestas pre-sintetizadas de APIs de fallback**; solo fuentes crudas, síntesis local.
+- **Verificación en vivo**: la pregunta original devuelve ahora "La ganadora del encuentro fue España... vencer 1-0 en tiempo extra a Argentina" (Wikipedia cruda). Trail completo visible: `GOOGLE ❌(timeout) → TAVILY ✅ → EXA ❌ → DDG ❌`.
+- Suite: 417 tests.
+
+---
+
+---
+
 ## 1. Supresión de Errores C de ALSA y PortAudio (Linux PCM Underruns)
 - **Síntoma:** Aparecían mensajes repetitivos en la consola como `ALSA lib pcm.c:8787:(snd_pcm_recover) [error.pcm] underrun occurred` y `Expression 'res' failed in 'src/hostapi/alsa/pa_linux_alsa.c'`.
 - **Causa Raíz:** Las librerías de bajo nivel en C (`libasound.so.2` y PortAudio) escriben advertencias directamente a `stderr` de C en lugar de usar el logging de Python.
