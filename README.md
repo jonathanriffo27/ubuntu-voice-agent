@@ -81,9 +81,8 @@ graph TD
 ### 3. 🔍 Búsqueda Multi-Motor Inteligente & Deep Research
 - **Jerarquía con Fallback Automático**:
   1. **Google Search Grounding** (Motor Primario, 2.5s timeout).
-  2. **Tavily Search API** (Segundo Fallback).
-  3. **DuckDuckGo Search** (Tercer Fallback Gratuito y Libre de API keys).
-- **Trazabilidad Visual**: Insignias dinámicas en consola (`[GOOGLE ✅]`, `[GOOGLE ❌ → TAVILY ✅]`, etc.).
+  2. **Fallbacks en paralelo** (compiten, gana el primero útil por prioridad): **Tavily API** → **Exa** → **DuckDuckGo** (vía `ddgs`, meta-buscador gratuito sin API key: DuckDuckGo, Bing, Brave, Mojeek...).
+- **Trazabilidad Visual**: Insignias dinámicas en consola (`[GOOGLE ✅]`, `[GOOGLE ❌ → TAVILY ✅ → EXA ✓]`, etc.).
 - **Lector de Páginas Web**: Extracción limpia de artículos y contenido web.
 - **Motor Deep Research (4 Fases)**:
   1. *Planificación*: Gemini 3.7 genera 3 subconsultas complementarias.
@@ -152,7 +151,7 @@ graph TD
 │   ├── ui/                     # CLI interactiva, TerminalInput y servidor Web HUD
 │   ├── utils/                  # Logging estructurado, rotativo y sensor AT-SPI2
 │   └── voice/                  # Captura de audio, VAD inteligente y reproductor PipeWire
-├── tests/                      # Suite de 96 pruebas automatizadas con pytest (100% passing)
+├── tests/                      # Suite de 442 pruebas automatizadas con pytest (100% passing)
 └── debug/                      # Scripts auxiliares de diagnóstico y testing
 ```
 

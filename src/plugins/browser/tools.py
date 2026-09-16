@@ -18,8 +18,8 @@ class MultiEngineSearchManager:
     """
     Gestor de búsqueda multi-motor con jerarquía estricta de fallback y trazabilidad:
     1. Google Search Grounding (Motor Primario)
-    2. Tavily Search (Segundo Fallback)
-    3. DuckDuckGo Search (Tercer Fallback Gratuito y Libre)
+    2. Fallbacks EN PARALELO por prioridad: Tavily → Exa → DuckDuckGo
+       (este último vía librería `ddgs`, meta-buscador gratuito sin API keys)
 
     FreSCo (freshness): las consultas con marcadores temporales relativos
     ("último", "hoy", "reciente"...) se anclan a la fecha actual antes de buscar;
@@ -186,7 +186,7 @@ class BuscarEnInternetTool(BaseTool):
     def description(self) -> str:
         return (
             "Busca información en internet en tiempo real sobre noticias, clima, cotizaciones, "
-            "deportes, eventos o dudas generales. Utiliza Google Search con respaldo de Tavily y DuckDuckGo. "
+            "deportes, eventos o dudas generales. Utiliza Google Search con respaldo de Tavily, Exa y DuckDuckGo. "
             "IMPORTANTE: si la pregunta depende del presente ('último', 'hoy', 'actual', 'quién ganó'), "
             "incluye en la query el año/fecha actual que conoces por el contexto (ej. '2026'), "
             "para evitar respuestas obsoletas de años anteriores."

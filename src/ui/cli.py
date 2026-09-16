@@ -70,7 +70,7 @@ class CLIInterface:
             print(f"{C_CYAN}╚══════════════════════════════════════════════════════════════╝{C_RESET}")
             print(f"{C_CYAN}│{C_RESET} 🎙️  {C_BOLD}Voz:{C_RESET}        Live Preview (Wake Word 'Alexa' o [Tab] para Mute)")
             print(f"{C_CYAN}│{C_RESET} 🤖  {C_BOLD}Subagente:{C_RESET}  Gemini 3.7 Flash High (CLIProxy Oracle)")
-            print(f"{C_CYAN}│{C_RESET} 🔍  {C_BOLD}Búsqueda:{C_RESET}   Google → Tavily → DuckDuckGo (Deep Research)")
+            print(f"{C_CYAN}│{C_RESET} 🔍  {C_BOLD}Búsqueda:{C_RESET}   Google → Tavily → Exa → DuckDuckGo/ddgs (Deep Research)")
             print(f"{C_CYAN}│{C_RESET} 🌐  {C_BOLD}Web HUD:{C_RESET}    http://localhost:7890 (Dashboard interactivo)")
             print(f"{C_CYAN}│{C_RESET} ⌨️  {C_BOLD}Terminal:{C_RESET}   Escribe prompts libremente o [Enter] para aprobar")
             print(f"{C_CYAN}│{C_RESET} 🚀  {C_GREEN}Sistema listo y en espera de activación ('Alexa')...{C_RESET}")

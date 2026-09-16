@@ -1,6 +1,6 @@
+import asyncio
 import re
 import urllib.parse
-from html import unescape
 from typing import Optional, List
 import httpx
 from .base import BaseSearchEngine, SearchResponse, SearchResultItem
@@ -12,11 +12,14 @@ logger = get_logger("plugins.browser.duckduckgo")
 class DuckDuckGoSearchEngine(BaseSearchEngine):
     """
     Motor de búsqueda libre y sin API keys con soporte para Respuestas Instantáneas,
-    Clima en tiempo real (wttr.in) y DuckDuckGo API (Fallback Universal).
+    Clima en tiempo real (wttr.in) y búsqueda generalista vía librería `ddgs`
+    (meta-buscador: duckduckgo, bing, brave, mojeek...). Reemplaza al scraper HTML
+    de html.duckduckgo.com, bloqueado por anti-bot (HTTP 202 anomaly challenge).
     """
 
-    def __init__(self, timeout: float = 6.0):
+    def __init__(self, timeout: float = 6.0, region: str = "cl-es"):
         self.timeout = timeout
+        self.region = region
         self.headers = {
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0",
             "Accept": "text/html,application/json,*/*",
@@ -236,62 +239,61 @@ class DuckDuckGoSearchEngine(BaseSearchEngine):
             logger.debug(f"DDG Instant API error: {e}")
         return None
 
+    async def _ddgs_search(self, query: str, max_results: int) -> SearchResponse:
+        """
+        Búsqueda generalista vía librería `ddgs` (meta-buscador sin API keys:
+        duckduckgo, bing, brave, mojeek, startpage...). Es síncrona, así que se
+        ejecuta en un hilo para no bloquear el loop de voz.
+        """
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            return SearchResponse(
+                query=query, success=False,
+                error="Paquete 'ddgs' no instalado (pip install ddgs).",
+                engine_used=self.name
+            )
+
+        try:
+            timeout, region = self.timeout, self.region
+
+            def _run():
+                return DDGS(timeout=timeout).text(
+                    query, region=region, safesearch="moderate", max_results=max_results
+                )
+
+            raw = await asyncio.to_thread(_run)
+        except Exception as e:
+            logger.warning(f"Error en búsqueda ddgs: {e}")
+            return SearchResponse(query=query, success=False, error=str(e), engine_used=self.name)
+
+        items = [
+            SearchResultItem(
+                title=(r.get("title") or "Sin título").strip(),
+                url=(r.get("href") or "").strip(),
+                content=(r.get("body") or "").strip(),
+                source_engine=self.name
+            )
+            for r in (raw or [])[:max_results]
+            if r.get("href")
+        ]
+        if not items:
+            return SearchResponse(
+                query=query, success=False,
+                error="Sin resultados en DuckDuckGo/ddgs.", engine_used=self.name
+            )
+        return SearchResponse(query=query, results=items, engine_used=self.name, success=True)
+
     async def search(self, query: str, max_results: int = 4) -> SearchResponse:
         # 1. Intentar consulta especializada de clima si aplica
         weather_res = await self._try_weather(query)
         if weather_res:
             return weather_res
 
-        # 2. Intentar DuckDuckGo Instant API
+        # 2. Intentar DuckDuckGo Instant API (respuestas enciclopédicas)
         instant_res = await self._try_instant_api(query, max_results=max_results)
         if instant_res and (instant_res.answer or instant_res.results):
             return instant_res
 
-        # 3. Intentar HTML Scraper
-        url = "https://html.duckduckgo.com/html/"
-        data = {"q": query}
-
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, headers=self.headers) as client:
-                resp = await client.post(url, data=data)
-                if resp.status_code == 200:
-                    html = resp.text
-                    items = []
-                    matches = re.findall(
-                        r'<a class="result__url"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?<a class="result__snippet"[^>]*>(.*?)</a>',
-                        html,
-                        re.DOTALL
-                    )
-
-                    for m in matches[:max_results]:
-                        raw_url = m[0].strip()
-                        if "uddg=" in raw_url:
-                            parsed = urllib.parse.parse_qs(urllib.parse.urlparse(raw_url).query)
-                            clean_url = parsed.get("uddg", [raw_url])[0]
-                        else:
-                            clean_url = raw_url
-
-                        raw_title = re.sub(r'<[^>]+>', '', m[1]).strip()
-                        raw_snippet = re.sub(r'<[^>]+>', '', m[2]).strip()
-
-                        items.append(
-                            SearchResultItem(
-                                title=unescape(raw_title) or "Sin título",
-                                url=clean_url,
-                                content=unescape(raw_snippet),
-                                source_engine=self.name
-                            )
-                        )
-
-                    if items:
-                        return SearchResponse(
-                            query=query,
-                            results=items,
-                            engine_used=self.name,
-                            success=True
-                        )
-
-            return SearchResponse(query=query, success=False, error="Sin resultados en DuckDuckGo.", engine_used=self.name)
-        except Exception as e:
-            logger.warning(f"Error en DuckDuckGo Search: {e}")
-            return SearchResponse(query=query, success=False, error=str(e), engine_used=self.name)
+        # 3. Búsqueda generalista vía ddgs (sustituto del scraper HTML bloqueado)
+        return await self._ddgs_search(query, max_results)

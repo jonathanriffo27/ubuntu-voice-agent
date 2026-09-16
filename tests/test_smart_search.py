@@ -16,30 +16,10 @@ from src.tools.base import ToolContext
 from src.config.models import AtlasConfig
 
 
-@pytest.mark.asyncio
-async def test_duckduckgo_search_parsing():
-    engine = DuckDuckGoSearchEngine()
-    fake_html = """
-    <html>
-        <body>
-            <a class="result__url" href="https://example.com/test">Ejemplo</a>
-            <a class="result__snippet" href="#">Este es un snippet de prueba sobre Python.</a>
-        </body>
-    </html>
-    """
-
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.text = fake_html
-    mock_resp.raise_for_status = MagicMock()
-
-    with patch.object(engine, "_try_instant_api", AsyncMock(return_value=None)), \
-         patch("httpx.AsyncClient.post", AsyncMock(return_value=mock_resp)):
-        res = await engine.search("python")
-        assert res.success is True
-        assert len(res.results) == 1
-        assert "example.com" in res.results[0].url
-        assert "snippet" in res.results[0].content
+# NOTA: el antiguo test del scraper HTML (html.duckduckgo.com) se eliminó:
+# ese endpoint quedó bloqueado por anti-bot (HTTP 202 anomaly) y la capa
+# generalista ahora usa la librería `ddgs`. Su cobertura vive en
+# tests/test_ddgs_fallback.py.
 
 
 @pytest.mark.asyncio
