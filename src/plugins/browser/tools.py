@@ -119,8 +119,10 @@ class MultiEngineSearchManager:
             if _util(r) and elegido is None:
                 elegido = (nombre, r)
                 trail.append(f"{nombre} ✅")
+            elif _util(r):
+                trail.append(f"{nombre} ✓")   # respondió, pero no fue el elegido
             else:
-                trail.append(f"{nombre} ❌" if not _util(r) else f"{nombre} ✅")
+                trail.append(f"{nombre} ❌")
 
         if elegido:
             return await self._verificar_frescura(elegido[1], query, temporal, trail)
