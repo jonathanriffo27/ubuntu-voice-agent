@@ -194,8 +194,13 @@ class BrowserManager:
         page = await self.attach(target_id)
         return target_id, page
 
-    async def attach(self, target_id: str):
-        """Adjunta la conexión a una pestaña (flatten) y devuelve su PageController."""
+    async def attach(self, target_id: str, enable_timeout: float = 10.0):
+        """Adjunta la conexión a una pestaña (flatten) y devuelve su PageController.
+
+        Si el attach tiene éxito pero la pestaña no responde (renderer colgado:
+        la sesión existe pero Page.enable nunca contesta), desadjunta la sesión
+        zombie antes de propagar el error para no acumular sesiones fantasma.
+        """
         from .page import PageController
 
         conn = await self.ensure_connected()
@@ -205,7 +210,15 @@ class BrowserManager:
         if not session_id:
             raise CDPError("Target.attachToTarget no devolvió sessionId.")
         page = PageController(conn=conn, session_id=session_id, target_id=target_id)
-        await page.enable()
+        try:
+            await page.enable(timeout=enable_timeout)
+        except CDPError:
+            try:
+                await conn.send("Target.detachFromTarget",
+                                {"sessionId": session_id}, timeout=3.0)
+            except CDPError:
+                pass
+            raise
         return page
 
     async def close_tab(self, target_id: str) -> bool:
@@ -220,6 +233,18 @@ class BrowserManager:
     # ------------------------------------------------------------------
     # Cierre
     # ------------------------------------------------------------------
+    async def restart(self) -> CDPConnection:
+        """Reinicia la pila CDP: cierra conexión (y el proceso, si es nuestro) y reconecta.
+
+        Solo mata el proceso cuando lo lanzó Atlas (`_owns_browser`); si el
+        navegador es preexistente (lanzado por el usuario con depuración), solo
+        reabre el websocket.
+        """
+        await self.shutdown()
+        self._owns_browser = False
+        self._proc = None
+        return await self.ensure_connected()
+
     async def shutdown(self) -> None:
         """Cierra la conexión. Solo mata el proceso si lo lanzó Atlas."""
         if self._conn:

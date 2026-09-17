@@ -17,7 +17,7 @@ Seguridad:
 """
 import asyncio
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from src.tools.base import BaseTool, ToolContext, ToolResult
 from src.cdp import BrowserManager, PageController, CDPError
@@ -171,24 +171,91 @@ class NavegadorWebTool(BaseTool):
         return self._manager
 
     async def _get_page(self) -> PageController:
-        """Devuelve la pestaña activa (o la primera disponible / una nueva)."""
+        """Devuelve una pestaña VIVA; repara la pila CDP si está degradada.
+
+        Jerarquía de recuperación (aprendida de un fallo real: una pestaña con
+        el renderer colgado acepta Target.attachToTarget pero nunca responde a
+        Page.enable, y antes este método la reelegía en cada intento, quedando
+        en un bucle de timeouts de 20s):
+        1. Pestaña activa cacheada (con ping de sanidad).
+        2. Cualquier otra pestaña existente que responda.
+        3. Pestaña nueva.
+        4. Reinicio de la instancia CDP controlada y una última pestaña nueva.
+        """
         manager = self._get_manager()
-        tabs = await manager.list_tabs()
-        if self._active_target and any(t.target_id == self._active_target for t in tabs):
-            return await self._attach_cached(self._active_target)
-        if tabs:
-            self._active_target = tabs[0].target_id
-            return await self._attach_cached(tabs[0].target_id)
-        target_id, page = await manager.open_tab()
-        self._active_target = target_id
+        restarted = False
+        while True:
+            try:
+                tabs = await manager.list_tabs()
+            except CDPError:
+                if restarted:
+                    raise
+                logger.warning("CDP no responde a nivel navegador; reiniciando la instancia controlada…")
+                await manager.restart()
+                restarted = True
+                continue
+
+            # 1) y 2): pestaña activa primero, luego el resto
+            ordered: List[str] = []
+            if self._active_target:
+                ordered.append(self._active_target)
+            ordered.extend(t.target_id for t in tabs if t.target_id not in ordered)
+
+            for target_id in ordered:
+                page = await self._try_attach(target_id)
+                if page is not None:
+                    self._active_target = target_id
+                    return page
+
+            # 3) Pestaña nueva (las existentes, si las hay, están colgadas)
+            page = await self._open_fresh_tab()
+            if page is not None:
+                return page
+
+            # 4) Último recurso: el navegador entero está colgado
+            if restarted:
+                raise CDPError(
+                    "El navegador controlado no responde ni tras reiniciarlo. "
+                    "Ciérralo manualmente y vuelve a intentarlo."
+                )
+            logger.warning("Navegador CDP irresponsivo (ni pestañas existentes ni nueva); reiniciando instancia…")
+            await manager.restart()
+            restarted = True
+
+    async def _try_attach(self, target_id: str) -> Optional[PageController]:
+        """Adjunta y verifica con un ping barato; descarga la pestaña si está colgada."""
+        manager = self._get_manager()
+        page = self._pages.get(target_id)
+        try:
+            if page is None:
+                page = await manager.attach(target_id)
+            # Ping de sanidad: detecta en ~4s un renderer colgado (el attach
+            # puede "triunfar" sobre una pestaña cuyo proceso está muerto).
+            await page.evaluate("1", timeout=4.0)
+        except (CDPError, asyncio.TimeoutError) as e:
+            logger.warning(f"Pestaña {target_id[:8]}… irresponsiva ({e}); descartándola.")
+            self._pages.pop(target_id, None)
+            self._snapshots.pop(target_id, None)
+            if self._active_target == target_id:
+                self._active_target = None
+            try:
+                await manager.close_tab(target_id)
+            except CDPError:
+                pass
+            return None
         self._pages[target_id] = page
         return page
 
-    async def _attach_cached(self, target_id: str) -> PageController:
-        page = self._pages.get(target_id)
-        if page is None:
-            page = await self._get_manager().attach(target_id)
-            self._pages[target_id] = page
+    async def _open_fresh_tab(self) -> Optional[PageController]:
+        try:
+            target_id, page = await asyncio.wait_for(
+                self._get_manager().open_tab(), timeout=15.0,
+            )
+        except (CDPError, asyncio.TimeoutError) as e:
+            logger.warning(f"No se pudo abrir una pestaña nueva: {e}")
+            return None
+        self._pages[target_id] = page
+        self._active_target = target_id
         return page
 
     def _resolve(self, snapshot, objetivo: str, indice: Optional[int]):

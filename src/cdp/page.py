@@ -190,10 +190,18 @@ class PageController:
     # ------------------------------------------------------------------
     # Base
     # ------------------------------------------------------------------
-    async def enable(self) -> None:
-        """Activa los dominios mínimos de la sesión."""
-        await self._conn.send("Page.enable", session_id=self.session_id)
-        await self._conn.send("Runtime.enable", session_id=self.session_id)
+    async def enable(self, timeout: float = 20.0) -> None:
+        """Activa los dominios mínimos de la sesión.
+
+        Un renderer colgado acepta el attach (Target.attachToTarget responde,
+        es un comando a nivel navegador) pero jamás contesta a Page.enable, que
+        va enrutado a la sesión. Por eso conviene un timeout más corto que el
+        de comandos normales al verificar una pestaña recién adjuntada.
+        """
+        await self._conn.send("Page.enable", session_id=self.session_id,
+                              timeout=timeout)
+        await self._conn.send("Runtime.enable", session_id=self.session_id,
+                              timeout=timeout)
 
     async def evaluate(self, expression: str, timeout: float = 15.0) -> Any:
         result = await self._conn.send(

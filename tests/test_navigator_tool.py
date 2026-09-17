@@ -1,6 +1,7 @@
 """Tests de la herramienta de voz navegador_web (Fase 4)."""
 import pytest
 
+from src.cdp.client import CDPError, CDPTimeoutError
 from src.cdp.manager import BrowserTab
 from src.cdp.page import InteractiveElement
 from src.plugins.navigator.tools import NavegadorWebTool
@@ -21,8 +22,11 @@ class FakePage:
         self.typed = []
         self._sig = 0
 
-    async def enable(self):
+    async def enable(self, timeout=20.0):
         pass
+
+    async def evaluate(self, expression, timeout=15.0):
+        return 1  # ping de sanidad OK
 
     async def navigate(self, url, timeout=15.0):
         return url
@@ -197,3 +201,66 @@ class TestRiskTiers:
         tool, _ = make_tool(approval=None, policy=policy)
         res = await tool.execute(CTX, accion="click", objetivo="realizar pago ahora")
         assert not res.success
+
+
+class RecoverableManager(FakeManager):
+    """Simula una pestaña con el renderer colgado: acepta attach pero no
+    responde a Page.enable (fallo real observado: timeout de 20s en bucle)."""
+
+    def __init__(self):
+        super().__init__()
+        self.wedged = {"T1"}          # targets cuyo attach cuelga
+        self.open_failures_left = 0   # open_tab falla N veces antes de funcionar
+        self.restart_calls = 0
+        self.closed = []
+
+    async def attach(self, target_id):
+        if target_id in self.wedged:
+            raise CDPTimeoutError("Timeout (10.0s) esperando respuesta a 'Page.enable'")
+        return await super().attach(target_id)
+
+    async def open_tab(self, url="about:blank"):
+        if self.open_failures_left > 0:
+            self.open_failures_left -= 1
+            raise CDPError("Target.createTarget no devolvió targetId.")
+        return await super().open_tab(url)
+
+    async def close_tab(self, target_id):
+        self.closed.append(target_id)
+        self.wedged.discard(target_id)
+        return await super().close_tab(target_id)
+
+    async def restart(self):
+        self.restart_calls += 1
+
+
+def _recovery_tool(**state) -> tuple:
+    manager = RecoverableManager()
+    for key, value in state.items():
+        setattr(manager, key, value)
+    tool = NavegadorWebTool(manager=manager, policy=SecurityPolicy())
+    return tool, manager
+
+
+class TestRecovery:
+    async def test_pestana_colgada_se_descarta_y_abre_una_nueva(self):
+        tool, manager = _recovery_tool()
+        res = await tool.execute(CTX, accion="abrir", objetivo="example.com")
+        assert res.success
+        assert manager.closed == ["T1"]         # la pestaña zombie se limpió
+        assert manager.restart_calls == 0       # no hizo falta reiniciar
+        assert tool._active_target == "T2"      # opera sobre la pestaña nueva
+
+    async def test_reinicia_navegador_si_ni_pestana_nueva_responde(self):
+        tool, manager = _recovery_tool(open_failures_left=1)
+        res = await tool.execute(CTX, accion="abrir", objetivo="example.com")
+        assert res.success
+        assert manager.restart_calls == 1       # hubo reinicio de la instancia
+        assert tool._active_target == "T2"
+
+    async def test_error_claro_si_nada_responde_tras_reinicio(self):
+        tool, manager = _recovery_tool(open_failures_left=99)  # jamás abre pestañas
+        res = await tool.execute(CTX, accion="abrir", objetivo="example.com")
+        assert not res.success
+        assert "no responde" in res.content
+        assert manager.restart_calls == 1       # solo un reinicio, sin bucle
