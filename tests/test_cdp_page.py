@@ -196,3 +196,24 @@ class TestKeysAndNav:
         page = make_page()
         data = await page.screenshot()
         assert data == b"jpegdata"
+
+
+class TestReadTextYScrollSpa:
+    async def test_read_text_prefiere_role_main(self):
+        """SPAs tipo Gmail exponen el contenido en <div role="main">; sin ese
+        fallback el 'leer' devolvía todo el <body> con la bandeja enterrada."""
+        page = make_page()
+        await page.read_text()
+        exprs = [p.get("expression", "") for m, p, _ in page._conn.calls
+                 if m == "Runtime.evaluate"]
+        assert any('[role="main"]' in e for e in exprs)
+
+    async def test_scroll_tiene_fallback_a_contenedor_interno(self):
+        """En Gmail window.scrollBy no hace nada (posición 0px tras el scroll):
+        el JS debe buscar el contenedor scrollable interno más grande."""
+        page = make_page()
+        page._conn.when_js("scrollBy", 640)
+        y = await page.scroll("abajo")
+        assert y == 640
+        from src.cdp.page import _JS_SCROLL
+        assert "scrollHeight" in _JS_SCROLL and "scrollTop" in _JS_SCROLL

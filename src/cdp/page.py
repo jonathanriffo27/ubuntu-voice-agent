@@ -137,7 +137,11 @@ _JS_NATIVE_SETTER = """
 
 _JS_READ_TEXT = """
 (() => {
-  const pick = document.querySelector('article') || document.querySelector('main') || document.body;
+  // [role="main"] es clave en SPAs como Gmail: el contenido útil vive en un
+  // <div role="main"> (no hay <main> ni <article>); sin él se lee el <body>
+  // entero con toda la navegación y la bandeja queda enterrada.
+  const pick = document.querySelector('article') || document.querySelector('main')
+            || document.querySelector('[role="main"]') || document.body;
   const text = ((pick && pick.innerText) || '').trim();
   return {title: document.title, url: location.href, text: text.slice(0, %d)};
 })()
@@ -145,8 +149,25 @@ _JS_READ_TEXT = """
 
 _JS_SCROLL = """
 (() => {
-  window.scrollBy({left: 0, top: %d, behavior: 'instant'});
-  return Math.round(window.scrollY);
+  const dy = %d;
+  const before = window.scrollY;
+  window.scrollBy({left: 0, top: dy, behavior: 'instant'});
+  if (window.scrollY !== before) return Math.round(window.scrollY);
+  // La ventana no se mueve (SPAs tipo Gmail: la lista scrollea en un <div>
+  // interno): desplazar el contenedor scrollable visible más grande.
+  let best = null, bestArea = 0;
+  for (const el of document.querySelectorAll('*')) {
+    if (el.scrollHeight - el.clientHeight < 50) continue;
+    const st = getComputedStyle(el);
+    if (st.overflowY !== 'auto' && st.overflowY !== 'scroll') continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < 50 || r.height < 50) continue;
+    const area = r.width * r.height;
+    if (area > bestArea) { best = el; bestArea = area; }
+  }
+  if (!best) return 0;
+  best.scrollTop += dy;
+  return Math.round(best.scrollTop);
 })()
 """
 
