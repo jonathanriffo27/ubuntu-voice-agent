@@ -142,3 +142,45 @@ def test_connect_3_1_mantiene_config_detallada_con_server_vad(monkeypatch):
     ric = capturado["config"].realtime_input_config
     assert ric.automatic_activity_detection.silence_duration_ms == 600
     assert ric.activity_handling is not None
+
+
+# ---------------------------------------------------------------------------
+# Docs oficiales gemini-3.8-live:
+# https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live
+# ---------------------------------------------------------------------------
+
+class _FakeTool:
+    name = "herramienta_prueba"
+    description = "tool de prueba"
+    parameters = {"type": "OBJECT", "properties": {"x": {"type": "STRING"}}}
+
+
+def test_declaraciones_de_tools_son_blocking_en_3_8(monkeypatch):
+    """Bug real: con el default NON_BLOCKING el modelo respondía de memoria
+    ('Argentina 2022') mientras la búsqueda ya decía 'España 2026'. Con
+    behavior=BLOCKING el modelo espera el resultado antes de hablar."""
+    from google.genai import types
+    capturado = _provider_falso(monkeypatch)
+
+    async def go():
+        provider = GeminiProvider()
+        async with provider.connect(system_prompt="s", tools=[_FakeTool()]):
+            pass
+
+    asyncio.run(go())
+    decls = capturado["config"].tools[0].function_declarations
+    assert decls and decls[0].behavior == types.Behavior.BLOCKING
+
+
+def test_affective_dialog_no_se_envia_en_3_8(monkeypatch):
+    """La API de 3.8 retiró enable_affective_dialog: no debe enviarse aunque
+    la config local lo pida."""
+    capturado = _provider_falso(monkeypatch)
+
+    async def go():
+        provider = GeminiProvider(affective_dialog=True)
+        async with provider.connect(system_prompt="s", tools=[]):
+            pass
+
+    asyncio.run(go())
+    assert capturado["config"].enable_affective_dialog is not True

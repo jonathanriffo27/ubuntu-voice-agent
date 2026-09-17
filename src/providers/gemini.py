@@ -52,6 +52,15 @@ class GeminiProvider(BaseProvider):
                 decl = {
                     "name": tool.name,
                     "description": tool.description,
+                    # gemini-3.8-live ejecuta las function calls NON_BLOCKING por
+                    # defecto (docs oficiales del modelo): el modelo sigue hablando
+                    # —respondiendo de memoria— mientras la tool corre, y solo a
+                    # veces integra el resultado después (scheduling WHEN_IDLE).
+                    # Eso producía respuestas contrarias al resultado de la
+                    # búsqueda ("Argentina" cuando la tool ya decía "España 2026").
+                    # BLOCKING restaura el comportamiento pre-migración: el modelo
+                    # espera el tool result antes de hablar.
+                    "behavior": types.Behavior.BLOCKING,
                 }
                 if tool.parameters:
                     decl["parameters"] = tool.parameters
@@ -88,7 +97,15 @@ class GeminiProvider(BaseProvider):
         )
 
         if self.affective_dialog:
-            config.enable_affective_dialog = True
+            # gemini-3.8-live RETIRÓ enable_affective_dialog de la API (docs
+            # oficiales: "quita cualquier enable_affective_dialog de tu código").
+            if "gemini-3.8" in self.model_name:
+                logger.warning(
+                    f"{self.model_name} ya no admite enable_affective_dialog (retirado "
+                    "de la API); la opción de config se ignora."
+                )
+            else:
+                config.enable_affective_dialog = True
 
         if self.server_vad:
             # VAD en el servidor: detección de inicio/fin de habla y barge-in nativos.
