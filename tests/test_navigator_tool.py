@@ -242,6 +242,54 @@ def _recovery_tool(**state) -> tuple:
     return tool, manager
 
 
+class LoadingPage(FakePage):
+    """Simula una SPA de arranque lento (Gmail): las primeras lecturas ven solo
+    el shell de carga; el contenido real aparece tras N sondeos."""
+
+    def __init__(self, thin_polls=2):
+        super().__init__()
+        self.thin_polls = thin_polls
+        self.polls = 0
+
+    async def evaluate(self, expression, timeout=15.0):
+        if "innerText.length" in expression:
+            self.polls += 1
+            if self.polls <= self.thin_polls:
+                return {"t": 40, "e": 1}
+            return {"t": 5000, "e": 80}
+        return 1
+
+    async def read_text(self, max_chars=3500):
+        loaded = self.polls > self.thin_polls
+        return {
+            "title": "Gmail",
+            "url": "https://mail.google.com/mail/u/0/",
+            "text": ("x" * 800) if loaded else "Si tienes problemas con la carga…",
+        }
+
+
+class TestEsperaDeContenido:
+    async def test_leer_espera_a_que_la_spa_cargue(self):
+        import time
+        tool, manager = make_tool()
+        manager.page = LoadingPage(thin_polls=2)
+        t0 = time.monotonic()
+        res = await tool.execute(CTX, accion="leer")
+        elapsed = time.monotonic() - t0
+        assert res.success
+        assert manager.page.polls >= 3            # esperó a contenido real
+        assert elapsed >= 1.0                     # 2 sondeos delgados × ~0.5s
+        assert "seguir cargando" not in res.content  # contenido sano: sin aviso
+
+    async def test_leer_avisa_si_la_pagina_nunca_carga(self):
+        tool, manager = make_tool()
+        manager.page = LoadingPage(thin_polls=999)
+        tool._wait_readable_timeout = 1.1
+        res = await tool.execute(CTX, accion="leer")
+        assert res.success
+        assert "seguir cargando" in res.content    # aviso honesto en vez de silencio
+
+
 class TestRecovery:
     async def test_pestana_colgada_se_descarta_y_abre_una_nueva(self):
         tool, manager = _recovery_tool()
