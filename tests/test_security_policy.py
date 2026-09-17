@@ -76,6 +76,27 @@ class TestEscalation:
         assert policy.requires_hitl("analizar_pantalla") is False
         assert policy.requires_hitl("leer_archivo", "~/.ssh/id_rsa") is True
 
+    def test_gui_lectura_baja_a_tier1(self):
+        """Falso positivo del incidente: leer la GUI de Gmail disparaba burst_risky."""
+        policy = SecurityPolicy()
+        assert policy.classify("interactuar_gui", '{"accion": "leer", "app": "gmail"}') == RiskTier.READ_ONLY
+        assert policy.classify("interactuar_gui", "{'accion': 'leer', 'objetivo': 'correos'}") == RiskTier.READ_ONLY
+
+    def test_gui_click_se_mantiene_tier2(self):
+        policy = SecurityPolicy()
+        assert policy.classify("interactuar_gui", '{"accion": "click", "objetivo": "Aceptar"}') == RiskTier.LOCAL_WRITE
+        assert policy.classify("interactuar_gui", "texto sin estructura") == RiskTier.LOCAL_WRITE
+
+    def test_downgrade_nunca_apaga_escalacion(self):
+        """Una lectura GUI sobre contenido sensible sigue siendo Tier 3."""
+        policy = SecurityPolicy()
+        payload = '{"accion": "leer", "objetivo": "~/.ssh/id_rsa"}'
+        assert policy.classify("interactuar_gui", payload) == RiskTier.IRREVERSIBLE
+
+    def test_enfocar_aplicacion_es_tier1(self):
+        policy = SecurityPolicy()
+        assert policy.classify("enfocar_aplicacion") == RiskTier.READ_ONLY
+
 
 class TestYamlReal:
     """El YAML del repo se carga sin errores y es coherente."""
@@ -93,3 +114,8 @@ class TestYamlReal:
         assert policy.classify("leer_archivo", "~/.ssh/id_rsa") == RiskTier.IRREVERSIBLE
         assert policy.classify("leer_archivo", ".env") == RiskTier.IRREVERSIBLE
         assert policy.classify("leer_archivo", "README.md") == RiskTier.READ_ONLY
+
+    def test_yaml_real_incluye_downgrade_observacion(self):
+        policy = SecurityPolicy.load()
+        assert policy.classify("enfocar_aplicacion") == RiskTier.READ_ONLY
+        assert policy.classify("interactuar_gui", '{"accion": "leer", "app": "gmail"}') == RiskTier.READ_ONLY

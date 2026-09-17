@@ -22,6 +22,7 @@ tiers:
     - "leer_*"
     - "que_suena"
     - "ver_*"
+    - "enfocar_aplicacion"     # enfocar una ventana no modifica nada
     - "navegador_web.leer"     # contenido web entra con spotlighting (no confiable)
     - "navegador_web.elementos"
     - "navegador_web.pestanas"
@@ -79,3 +80,8 @@ escalation_patterns:
   - '(\.ssh/|\.gnupg/|\.aws/|id_rsa|id_ed25519|id_ecdsa|\.pem\b|\.key\b)'
   - '\.env\b'
   - '(credentials\.json|client_secret|api[_-]?key\s*=|access[_-]?token\s*=)'
+
+# Patrones de payload (regex) que confirman observación pura y bajan a Tier 1.
+# La escalación de contenido siempre se evalúa ANTES y gana si hay conflicto.
+read_only_payload_patterns:
+  - '[''"]accion[''"]\s*:\s*[''"](leer|leer_estado|observar|ver)[''"]'  # interactuar_gui(accion='leer')

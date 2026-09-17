@@ -36,7 +36,7 @@ _DEFAULT_RULES = {
     RiskTier.READ_ONLY: [
         "analizar_pantalla", "capturar_pantalla*", "leer_archivo", "listar_directorio",
         "buscar_*", "consultar_*", "que_suena", "listar_*", "leer_*", "status*",
-        "obtener_*", "ver_*",
+        "obtener_*", "ver_*", "enfocar_aplicacion",
         "navegador_web.leer", "navegador_web.elementos", "navegador_web.pestanas",
         "navegador_web.captura",
     ],
@@ -54,6 +54,14 @@ _DEFAULT_RULES = {
         "proponer_comando", "git_push", "borrar_*", "eliminar_*", "pagar*",
     ],
 }
+
+# Patrones de payload que confirman que la acción es de SOLO OBSERVACIÓN
+# y bajan el tier a READ_ONLY (nunca aplican si hay escalación sensible).
+_READ_ONLY_PAYLOAD_PATTERNS = [
+    # interactuar_gui(accion='leer'): leer el árbol de accesibilidad no modifica nada.
+    # El monitor la contaba como "risky" y una lectura de Gmail terminaba en falso positivo.
+    r"['\"]accion['\"]\s*:\s*['\"](leer|leer_estado|observar|ver)['\"]",
+]
 
 # Patrones de texto (en payload/objetivo) que elevan cualquier acción a Tier 3.
 _ESCALATION_PATTERNS = [
@@ -81,6 +89,7 @@ class SecurityPolicy:
     local_write: List[str] = field(default_factory=lambda: list(_DEFAULT_RULES[RiskTier.LOCAL_WRITE]))
     irreversible: List[str] = field(default_factory=lambda: list(_DEFAULT_RULES[RiskTier.IRREVERSIBLE]))
     escalation_patterns: List[str] = field(default_factory=lambda: list(_ESCALATION_PATTERNS))
+    read_only_payload_patterns: List[str] = field(default_factory=lambda: list(_READ_ONLY_PAYLOAD_PATTERNS))
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> "SecurityPolicy":
@@ -100,6 +109,7 @@ class SecurityPolicy:
                 local_write=list(tiers.get("local_write", _DEFAULT_RULES[RiskTier.LOCAL_WRITE])),
                 irreversible=list(tiers.get("irreversible", _DEFAULT_RULES[RiskTier.IRREVERSIBLE])),
                 escalation_patterns=list(data.get("escalation_patterns", _ESCALATION_PATTERNS)),
+                read_only_payload_patterns=list(data.get("read_only_payload_patterns", _READ_ONLY_PAYLOAD_PATTERNS)),
             )
         except Exception as e:
             logger.error(f"Error cargando security policy ({e}); usando defaults seguros.")
@@ -125,10 +135,16 @@ class SecurityPolicy:
             base = RiskTier.LOCAL_WRITE
 
         if payload_text:
-            text = payload_text.lower()
+            text = payload_text
+            # 1. La escalación por contenido SIEMPRE gana (defensa primero)
             for pattern in self.escalation_patterns:
                 if re.search(pattern, text, flags=re.IGNORECASE):
                     return RiskTier.IRREVERSIBLE
+            # 2. Downgrade a observación pura si el payload lo confirma explícitamente
+            if base <= RiskTier.LOCAL_WRITE:
+                for pattern in self.read_only_payload_patterns:
+                    if re.search(pattern, text, flags=re.IGNORECASE):
+                        return RiskTier.READ_ONLY
         return base
 
     def requires_hitl(self, action: str, payload_text: str = "") -> bool:
