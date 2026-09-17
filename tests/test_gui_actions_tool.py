@@ -231,3 +231,49 @@ async def test_objetivo_vacio_falla():
     tool, _ = _tool()
     res = await tool.execute(ToolContext(config=None), accion="click", objetivo=" ")
     assert not res.success
+
+
+async def test_leer_sin_nombres_accesibles_redirige_a_navegador():
+    """Caso real: PWA de Gmail abierta cuyo árbol AT-SPI llega sin nombres
+    ('[1] text: '''). La lectura debe fallar indicando la salida web."""
+    elementos = [_element(name="", role="text", actions=[]),
+                 _element(name="   ", role="push_button")]
+    tool, _ = _tool(resolver_elements=elementos)
+    res = await tool.execute(ToolContext(config=None), accion="leer", objetivo="gmail")
+    assert not res.success
+    assert "navegador_web" in res.content
+
+
+async def test_circuit_breaker_tras_3_acciones_sin_progreso():
+    tool, _ = _tool(element=None)  # nada resoluble: cada click falla
+    ctx = ToolContext(config=None)
+    for _ in range(2):
+        res = await tool.execute(ctx, accion="click", objetivo="Inexistente")
+        assert "DETÉN" not in res.content
+    res = await tool.execute(ctx, accion="click", objetivo="Inexistente")
+    assert "DETÉN" in res.content
+
+
+async def test_circuit_breaker_tambien_cuenta_acciones_sin_efecto_visible():
+    el = _element(name="Enviar", actions=["click"])
+    tool, _ = _tool(element=el, screen=FakeScreenNoChange())  # éxito sin efecto
+    ctx = ToolContext(config=None)
+    res = None
+    for _ in range(3):
+        res = await tool.execute(ctx, accion="click", objetivo="Enviar")
+    assert "no cambió" in res.content
+    assert "DETÉN" in res.content
+
+
+async def test_circuit_breaker_se_resetea_tras_progreso():
+    el = _element(name="Enviar", actions=["click"])
+    tool, resolver = _tool(element=None)
+    ctx = ToolContext(config=None)
+    await tool.execute(ctx, accion="click", objetivo="X")
+    await tool.execute(ctx, accion="click", objetivo="X")
+    resolver._found = el  # ahora resuelve y hay progreso real
+    res = await tool.execute(ctx, accion="click", objetivo="Enviar")
+    assert res.success and "DETÉN" not in res.content
+    resolver._found = None
+    res = await tool.execute(ctx, accion="click", objetivo="X")
+    assert "DETÉN" not in res.content  # streak reiniciado: solo 1 fallo seguido

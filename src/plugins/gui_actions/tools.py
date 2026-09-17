@@ -26,6 +26,15 @@ logger = get_logger("plugins.gui_actions")
 class InteractuarGuiTool(BaseTool):
     """Herramienta de interacción GUI híbrida AT-SPI2 + input por backend."""
 
+    # Marcadores (en minúsculas) en el contenido de un resultado que indican
+    # que la acción NO produjo progreso visible, aunque haya "tenido éxito".
+    _NO_PROGRESS_MARKERS = (
+        "no cambió", "no encontr", "no hay elementos", "no expone elementos",
+        "no se pudo", "no tiene geometría", "ningún backend",
+    )
+    # Cuántos intentos sin progreso seguidos activan el circuit breaker.
+    _NO_PROGRESS_LIMIT = 3
+
     def __init__(self, approval_manager=None, resolver: Optional[ElementResolver] = None,
                  router: Optional[InputRouter] = None, screen_service=None,
                  policy: Optional[SecurityPolicy] = None):
@@ -34,6 +43,7 @@ class InteractuarGuiTool(BaseTool):
         self._router = router or InputRouter()
         self._screen = screen_service  # lazy: OptimizedScreenCaptureService
         self._policy = policy or SecurityPolicy.load()
+        self._no_progress_streak = 0
 
     # ------------------------------------------------------------------
     @property
@@ -113,15 +123,41 @@ class InteractuarGuiTool(BaseTool):
                 return ToolResult(success=False, content=f"El usuario rechazó la acción '{accion}' sobre '{objetivo}'.")
 
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 self._dispatch(accion, objetivo, texto, app),
                 timeout=30.0,
             )
+            return self._apply_progress_guard(result)
         except asyncio.TimeoutError:
-            return ToolResult(success=False, content=f"La acción '{accion}' sobre '{objetivo}' excedió 30s y fue cancelada.")
+            result = ToolResult(success=False, content=f"La acción '{accion}' sobre '{objetivo}' excedió 30s y fue cancelada.")
+            return self._apply_progress_guard(result)
         except Exception as e:
             logger.error(f"interactuar_gui error: {e}")
             return ToolResult(success=False, content=f"Error ejecutando '{accion}' sobre '{objetivo}': {e}")
+
+    def _apply_progress_guard(self, result: ToolResult) -> ToolResult:
+        """Circuit breaker anti-bucle: cuenta acciones consecutivas sin progreso
+        visible y, al llegar al límite, ordena al LLM detenerse y explicar el
+        bloqueo en vez de seguir clicando a ciegas (caso real: 2+ min de clicks
+        al dock de GNOME intentando leer Gmail)."""
+        text = (result.content or "").lower()
+        progressed = result.success and not any(m in text for m in self._NO_PROGRESS_MARKERS)
+        if progressed:
+            self._no_progress_streak = 0
+            return result
+
+        self._no_progress_streak += 1
+        if self._no_progress_streak < self._NO_PROGRESS_LIMIT:
+            return result
+        result.content = (result.content or "") + (
+            f"\n⛔ DETÉN LA AUTOMATIZACIÓN GUI: llevas {self._no_progress_streak} "
+            "acciones consecutivas sin progreso visible. NO sigas haciendo clicks ni "
+            "lecturas a ciegas. Explica al usuario en una sola frase qué lo bloquea "
+            "(app sin accesibilidad útil, navegador caído, ventana que no abre) y "
+            "propón UNA alternativa concreta (por ejemplo 'navegador_web' con la URL "
+            "del servicio) o pídele que lo haga manualmente."
+        )
+        return result
 
     async def _dispatch(self, accion: str, objetivo: str, texto: str, app: Optional[str]) -> ToolResult:
         if accion == "tecla":
@@ -150,6 +186,18 @@ class InteractuarGuiTool(BaseTool):
             return ToolResult(
                 success=False,
                 content="No se encontraron elementos accesibles. La app puede no tener accesibilidad activa o no estar abierta."
+            )
+        # Ventana viva pero sin nombres accesibles (PWAs/webviews de Chromium
+        # suelen exponer un árbol AT-SPI sin name): operarla a ciegas es inútil.
+        if not any(el.name and el.name.strip() for el in elements):
+            return ToolResult(
+                success=False,
+                content=(
+                    f"La ventana de {hint} está abierta pero no expone elementos con "
+                    "nombres accesibles (árbol AT-SPI vacío, típico de PWAs/webviews). "
+                    "NO reintentes 'leer' esta app ni hagas clicks a ciegas sobre ella: "
+                    "usa la herramienta 'navegador_web' con la URL del servicio."
+                ),
             )
         lines = [f"Elementos interactivos visibles{f' en {hint}' if hint else ''}:"]
         for el in elements[:25]:
