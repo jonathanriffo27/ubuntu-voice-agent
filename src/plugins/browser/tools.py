@@ -28,10 +28,13 @@ class MultiEngineSearchManager:
     desactualizada en vez de presentarla con confianza.
     """
 
-    # Marcadores de "depende de la fecha de hoy"
+    # Marcadores de "depende de la fecha de hoy". Escritos SIN tildes a
+    # propósito: la query se normaliza (NFD sin diacríticos) antes de comparar,
+    # porque la voz suele transcribir "último" pero un usuario tecleando escribe
+    # "ultimo" — y sin normalizar la detección temporal no se activaba nunca.
     _TEMPORAL_RE = re.compile(
-        r"\b(últim[oa]s?|hoy|ayer|mañana|reciente[sm]?|actuale?s?|actualmente|este\s+(año|mes|semana)|"
-        r"próxim[oa]s?|noticias?|ahora|esta\s+semana|quién\s+ganó|resultado\s+de)\b",
+        r"\b(ultim[oa]s?|hoy|ayer|manana|reciente[sm]?|actuale?s?|actualmente|este\s+(ano|mes|semana)|"
+        r"proxim[oa]s?|noticias?|ahora|esta\s+semana|quien\s+gano|resultado\s+de)\b",
         re.IGNORECASE,
     )
     _YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
@@ -45,9 +48,25 @@ class MultiEngineSearchManager:
     # ------------------------------------------------------------------
     # Freshness / anclaje temporal
     # ------------------------------------------------------------------
+    @staticmethod
+    def _normalizar(texto: str) -> str:
+        """Minúsculas y sin diacríticos (NFD): 'último' ≡ 'ultimo', 'mañana' ≡ 'manana'."""
+        import unicodedata
+        return "".join(
+            c for c in unicodedata.normalize("NFD", texto or "")
+            if unicodedata.category(c) != "Mn"
+        ).lower()
+
     @classmethod
     def _es_temporal(cls, query: str) -> bool:
-        return bool(cls._TEMPORAL_RE.search(query or ""))
+        return bool(cls._TEMPORAL_RE.search(cls._normalizar(query)))
+
+    @staticmethod
+    def _fecha_hoy() -> str:
+        now = time.localtime()
+        meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+                 "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+        return f"{now.tm_mday} de {meses[now.tm_mon - 1]} de {now.tm_year}"
 
     @classmethod
     def _anclar_query(cls, query: str) -> str:
@@ -56,10 +75,7 @@ class MultiEngineSearchManager:
             return query
         if cls._YEAR_RE.search(query):
             return query  # ya viene anclada por el LLM
-        now = time.localtime()
-        meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
-                 "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
-        return f"{query} (hoy es {now.tm_mday} de {meses[now.tm_mon - 1]} de {now.tm_year})"
+        return f"{query} (hoy es {cls._fecha_hoy()})"
 
     @classmethod
     def _respuesta_obsoleta(cls, text: str, current_year: int) -> bool:
@@ -223,6 +239,18 @@ class BuscarEnInternetTool(BaseTool):
         header_badge = f"[{trail}] {short_summary}" if short_summary else f"[{trail}] Resultados obtenidos."
 
         output = f"{header_badge}\n\n"
+
+        # Defensa anti-memoria: los modelos Live con function calling asíncrono
+        # pueden seguir respondiendo "de memoria" pese a tener el resultado a la
+        # vista. La nota va pegada a los datos para anclar la respuesta a ellos.
+        if MultiEngineSearchManager._es_temporal(query):
+            output += (
+                f"📅 CONTEXTO TEMPORAL: hoy es {MultiEngineSearchManager._fecha_hoy()}. "
+                "Estas fuentes recogen lo publicado MÁS RECIENTEMENTE: si contradicen tu "
+                "memoria de entrenamiento, tu memoria está desactualizada y prevalecen las "
+                "fuentes. Si traen una lista por años (palmarés, rankings), el dato correcto "
+                "es el del AÑO MÁS RECIENTE.\n\n"
+            )
         if res.answer:
             output += f"Respuesta Directa:\n{res.answer}\n\n"
 

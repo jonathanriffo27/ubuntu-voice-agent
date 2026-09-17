@@ -28,8 +28,11 @@ def make_manager(google=None, tavily=None, ddg=None, exa=None):
 class TestMarcadoresTemporales:
     @pytest.mark.parametrize("q", [
         "quién ganó el último mundial",
+        "quien gano el ultimo mundial",      # sin tildes (entrada por teclado)
+        "QUIEN GANO EL ULTIMO MUNDIAL",      # mayúsculas gritadas
         "noticias de hoy",
         "clima mañana",
+        "clima manana",                      # 'mañana' sin eñe
         "resultado del partido reciente",
         "precio actual del cobre",
         "estrenos de este año",
@@ -179,6 +182,41 @@ class TestFlujoConFreshness:
         res, _ = await m.search("capital de Francia")
         assert res.answer == "París"
         assert tavily.await_count == 1
+
+
+class TestNotaTemporalEnOutput:
+    """Defensa anti-memoria: el resultado de una consulta temporal lleva una
+    nota pegada a los datos ordenando al modelo responder con ellos (y con el
+    año más reciente), en vez de desde su entrenamiento."""
+
+    def _tool(self):
+        from src.plugins.browser.engines.base import SearchResultItem
+        from src.plugins.browser.tools import BuscarEnInternetTool
+        res = SearchResponse(
+            query="q", answer=f"España ganó en {CURRENT_YEAR}.",
+            success=True, engine_used="tavily",
+            results=[SearchResultItem(title="Palmarés", url="https://x",
+                                      content=f"{CURRENT_YEAR} España", source_engine="tavily")])
+
+        class StubManager:
+            async def search(self, query, max_results=4):
+                return res, "TAVILY ✅"
+
+        return BuscarEnInternetTool(search_manager=StubManager())
+
+    async def test_consulta_temporal_incluye_nota_de_contexto(self):
+        from src.tools.base import ToolContext
+        out = await self._tool().execute(ToolContext(config=None),
+                                         query="quién ganó el último mundial")
+        assert "CONTEXTO TEMPORAL" in out.content
+        assert str(CURRENT_YEAR) in out.content
+        assert "AÑO MÁS RECIENTE" in out.content
+
+    async def test_consulta_atemporal_no_lleva_nota(self):
+        from src.tools.base import ToolContext
+        out = await self._tool().execute(ToolContext(config=None),
+                                         query="capital de Francia")
+        assert "CONTEXTO TEMPORAL" not in out.content
 
 
 class TestCadenaDeFallback:

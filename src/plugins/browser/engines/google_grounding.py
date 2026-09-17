@@ -109,7 +109,11 @@ class GoogleGroundingSearchEngine(BaseSearchEngine):
         )
         config = types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())],
-            temperature=0.1
+            temperature=0.1,
+            # Grounding es server-side; no hay funciones locales que ejecutar.
+            # Sin esto el SDK emite el warning "Direct use of AFC in
+            # AsyncModels.generate_content is not recommended" en cada búsqueda.
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
 
         response = await asyncio.wait_for(
