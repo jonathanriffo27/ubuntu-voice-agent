@@ -6,7 +6,7 @@ provider:
 voice:
   mode: wake_word            # "wake_word" (estilo Ok Google) o "always_on"
   wake_word: alexa           # "alexa", "hey_jarvis", "hey_mycroft" o ruta a .onnx
-  wake_word_threshold: 0.28  # Sensibilidad optimizada para español chileno (0.28 - 0.35)
+  wake_word_threshold: 0.55  # Subido de 0.28: falsos positivos de TV/audio ambiental disparaban a ~0.50; reales observados: 0.62-0.99
   follow_up_timeout: 7.0     # Ventana para repreguntar sin repetir wake word
   activation_sound: true     # Reproduce ding al despertar
   language: es-CL
