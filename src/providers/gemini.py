@@ -13,7 +13,7 @@ logger = get_logger("providers.gemini")
 class GeminiProvider(BaseProvider):
     def __init__(
         self,
-        model_name: str = "gemini-3.1-flash-live-preview",
+        model_name: str = "gemini-3.8-live",
         voice_name: str = "Aoede",
         server_vad: bool = False,
         affective_dialog: bool = False

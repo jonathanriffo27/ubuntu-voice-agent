@@ -9,7 +9,7 @@
 ---
 
 <div align="center">
-  <b>🎙 Gemini 3.1 Live</b> • <b>🧠 Gemini 3.7 Flash</b> • <b>🛡️ HITL Approval</b> • <b>🔍 Smart Multi-Search & Deep Research</b> • <b>🔄 Hot-Reload</b> • <b>🎵 Spotify MPRIS</b> • <b>🔌 MCP & Plugins</b> • <b>📊 Web HUD (:7890)</b> • <b>⌨️ Terminal Prompts & Shortcuts</b>
+  <b>🎙 Gemini 3.8 Live</b> • <b>🧠 Gemini 3.7 Flash</b> • <b>🛡️ HITL Approval</b> • <b>🔍 Smart Multi-Search & Deep Research</b> • <b>🔄 Hot-Reload</b> • <b>🎵 Spotify MPRIS</b> • <b>🔌 MCP & Plugins</b> • <b>📊 Web HUD (:7890)</b> • <b>⌨️ Terminal Prompts & Shortcuts</b>
 </div>
 
 ---
@@ -20,7 +20,7 @@ Atlas está construido bajo principios estrictos de **Clean Architecture** y com
 
 ```mermaid
 graph TD
-    User([👤 Usuario]) <-->|Audio PCM 16/24kHz| AtlasLive[🎙️ Atlas Frontend: Gemini 3.1 Flash Live]
+    User([👤 Usuario]) <-->|Audio PCM 16/24kHz| AtlasLive[🎙️ Atlas Frontend: Gemini 3.8 Live]
     User <-->|HTTP / WebSocket / HITL Buttons| WebHUD[📊 Dashboard Web HUD :7890]
     User <-->|Teclado: Prompts + Flechas + Hotkeys| Terminal[⌨️ TerminalInteractionManager]
     
@@ -58,7 +58,7 @@ graph TD
 ## ✨ Características Principales
 
 ### 1. 🎙️ Frontend de Voz de Ultra Baja Latencia & Streaming
-- **Modelo**: `gemini-3.1-flash-live-preview` vía **Google GenAI Multimodal Live API** (WebSocket bidireccional dúplex).
+- **Modelo**: `gemini-3.8-live` vía **Google GenAI Multimodal Live API** (WebSocket bidireccional dúplex).
 - **Voz nativa**: Síntesis y reconocimiento End-to-End sin pipelines STT/TTS lentos.
 - **Transcripción y Visualización en Terminal**: Emisión de texto en tiempo real (`output_audio_transcription`) con prefijo `│ 🤖 Atlas: ` en la consola mientras el audio suena por los parlantes.
 - **Detección VAD Multi-Feature**: Filtra ruidos mecánicos y respiración mediante análisis adaptativo de energía RMS, ZCR (Zero-Crossing Rate) y Crest Factor.

@@ -5,7 +5,7 @@ from typing import Dict, Any, List, Optional
 @dataclass
 class ProviderConfig:
     type: str = "gemini"
-    model: str = "gemini-3.1-flash-live-preview"
+    model: str = "gemini-3.8-live"
     voice: str = "Aoede"
 
 
