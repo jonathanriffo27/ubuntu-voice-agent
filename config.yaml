@@ -10,7 +10,7 @@ voice:
   follow_up_timeout: 7.0     # Ventana para repreguntar sin repetir wake word
   activation_sound: true     # Reproduce ding al despertar
   language: es-CL
-  server_vad: false          # true = el VAD nativo de Gemini decide el fin de turno (experimental)
+  server_vad: false          # true = VAD nativo de Gemini cierra el turno. OBLIGATORIO en gemini-3.8 (se fuerza solo): audio_stream_end es ignorado por ese modelo
   affective_dialog: false    # true = voz con entonación afectiva/emocional nativa
 
 memory:

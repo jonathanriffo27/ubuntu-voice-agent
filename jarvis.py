@@ -12,6 +12,7 @@ from src.tools.registry import ToolRegistry
 from src.knowledge.manager import KnowledgeManager
 from src.knowledge.backends.json import JsonKnowledgeBackend
 from src.config.loader import load_config
+from src.config.models import enforce_model_requirements
 from src.events.bus import EventBus
 from src.ui.cli import CLIInterface
 from src.ui.web_overlay import WebOverlayServer
@@ -43,6 +44,10 @@ if not API_KEY:
 
 if __name__ == "__main__":
     config = load_config("config.yaml")
+    # 3.8 Live ignora audio_stream_end: forzar VAD del servidor (recorder + provider)
+    config = enforce_model_requirements(config)
+    if "gemini-3.8" in config.provider.model and config.voice.server_vad:
+        logger.info("🎙️ gemini-3.8-live detectado: VAD del servidor activo (cierre de turno por pausa natural).")
 
     # Inicializar el Event Bus y la UI de consola
     event_bus = EventBus()

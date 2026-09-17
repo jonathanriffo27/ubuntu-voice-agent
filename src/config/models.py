@@ -70,3 +70,19 @@ class AtlasConfig:
     ui: UIConfig = field(default_factory=UIConfig)
     developer_agent: DeveloperAgentConfig = field(default_factory=DeveloperAgentConfig)
     mcp_servers: Dict[str, Any] = field(default_factory=dict)
+
+
+def enforce_model_requirements(config: AtlasConfig) -> AtlasConfig:
+    """
+    Ajustes obligatorios derivados del modelo de voz elegido.
+
+    gemini-3.8-live IGNORA `audio_stream_end` (medido empíricamente y
+    consistente con la documentación de la Live API: el flujo soportado es
+    stream continuo + VAD del servidor). Sin forzar server_vad, los turnos
+    de voz nunca se cierran y Atlas "no escucha". El recorder y el provider
+    leen esta bandera desde config.voice, así que se fuerza aquí, una vez.
+    """
+    model = getattr(config.provider, "model", "") or ""
+    if "gemini-3.8" in model and not config.voice.server_vad:
+        config.voice.server_vad = True
+    return config

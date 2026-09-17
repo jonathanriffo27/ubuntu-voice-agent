@@ -62,6 +62,7 @@ graph TD
 - **Voz nativa**: Síntesis y reconocimiento End-to-End sin pipelines STT/TTS lentos.
 - **Transcripción y Visualización en Terminal**: Emisión de texto en tiempo real (`output_audio_transcription`) con prefijo `│ 🤖 Atlas: ` en la consola mientras el audio suena por los parlantes.
 - **Detección VAD Multi-Feature**: Filtra ruidos mecánicos y respiración mediante análisis adaptativo de energía RMS, ZCR (Zero-Crossing Rate) y Crest Factor.
+- **VAD del servidor en Gemini 3.8 Live**: este modelo ignora `audio_stream_end`, por lo que Atlas fuerza automáticamente el cierre de turno por pausa natural (~1s) con detección de actividad del lado del servidor.
 - **Silenciamiento ALSA/PortAudio**: Supresión de errores de bajo nivel en Linux mediante bindings `ctypes`.
 - **Reconexión Resiliente y Transparente**: Recuperación en 0.5s ante desconexiones de inactividad (código 1008), sin repetir el banner de bienvenida ni interrumpir con audios iniciales, preservando el buffer de teclado de la terminal.
 

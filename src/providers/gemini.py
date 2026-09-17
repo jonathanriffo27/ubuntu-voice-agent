@@ -21,7 +21,16 @@ class GeminiProvider(BaseProvider):
         self.model_name = model_name
         self.voice_name = voice_name
         self.client = genai.Client()
-        self.server_vad = server_vad
+        # gemini-3.8-live IGNORA audio_stream_end=True (medido empíricamente: el
+        # turno de voz nunca se cierra y el modelo no responde). La vía viable es
+        # el VAD del servidor (automatic activity detection): por eso en los
+        # modelos 3.8 se fuerza server_vad aunque la config diga lo contrario.
+        self.server_vad = server_vad or "gemini-3.8" in model_name
+        if self.server_vad and "gemini-3.8" in model_name and not server_vad:
+            logger.warning(
+                f"{model_name} requiere VAD del servidor: se fuerza server_vad=True "
+                "(audio_stream_end no cierra turnos en este modelo)."
+            )
         self.affective_dialog = affective_dialog
         # Handle de session resumption: sobrevive a las reconexiones del WebSocket
         # para no perder el contexto conversacional (las sesiones mueren ~cada 15 min).
@@ -83,17 +92,26 @@ class GeminiProvider(BaseProvider):
 
         if self.server_vad:
             # VAD en el servidor: detección de inicio/fin de habla y barge-in nativos.
-            config.realtime_input_config = types.RealtimeInputConfig(
-                automatic_activity_detection=types.AutomaticActivityDetection(
-                    disabled=False,
-                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
-                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
-                    silence_duration_ms=600,
-                    prefix_padding_ms=300,
-                ),
-                activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
-                turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
-            )
+            if "gemini-3.8" in self.model_name:
+                # 3.8 Live (docs oficiales + medición propia): el modo soportado es
+                # stream continuo con detección automática por defecto — al pausar
+                # ~1s el servidor emite AudioStreamEnd y cierra el turno. Las
+                # banderas detalladas (sensibilidad/activity_handling) NO se envían.
+                config.realtime_input_config = types.RealtimeInputConfig(
+                    automatic_activity_detection=types.AutomaticActivityDetection(disabled=False),
+                )
+            else:
+                config.realtime_input_config = types.RealtimeInputConfig(
+                    automatic_activity_detection=types.AutomaticActivityDetection(
+                        disabled=False,
+                        start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                        end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
+                        silence_duration_ms=600,
+                        prefix_padding_ms=300,
+                    ),
+                    activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
+                    turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
+                )
 
         async with self.client.aio.live.connect(model=self.model_name, config=config) as native_session:
             yield GeminiSession(native_session, on_session_handle=self._save_session_handle)
