@@ -54,6 +54,10 @@ class CLIInterface:
     def __init__(self, event_bus=None):
         self.event_bus = event_bus
         self._in_text_stream = False
+        # Última transcripción mostrada; si la siguiente la EXTIENDE (refinado
+        # incremental de Gemini Live), se reescribe la misma línea en vez de
+        # imprimir una nueva. Se reinicia al completar el turno.
+        self._last_transcript = ""
         if self.event_bus:
             self.event_bus.subscribe_all(self.display_event)
 
@@ -114,7 +118,11 @@ class CLIInterface:
             print("\r" + " " * 45 + "\r", end="", flush=True)
             text_clean = event.text.strip()
             if text_clean and text_clean != "[Audio enviado]":
+                if self._last_transcript and text_clean.startswith(self._last_transcript):
+                    # Refinado incremental del mismo enunciado: reescribir en sitio
+                    sys.stdout.write("\033[A\r\033[K")
                 print(f"{C_CYAN}│{C_RESET} 🎙️  {C_BOLD}Tú (voz):{C_RESET} {C_GREEN}{text_clean}{C_RESET}")
+                self._last_transcript = text_clean
 
         elif isinstance(event, AssistantTextChunk):
             if not self._in_text_stream:
@@ -125,6 +133,7 @@ class CLIInterface:
 
         elif isinstance(event, TurnCompleted):
             self._flush_stream()
+            self._last_transcript = ""
 
         elif isinstance(event, UserInterrupted):
             if self._in_text_stream:

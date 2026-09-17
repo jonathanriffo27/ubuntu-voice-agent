@@ -122,11 +122,17 @@ class Assistant:
         """Recibe eventos normalizados del modelo y enruta audio, texto y ejecución de herramientas."""
         printed_prefix = False
         current_response_text: List[str] = []
+        # Última transcripción del usuario publicada en ESTE turno. Gemini Live
+        # a veces re-emite el mismo texto final (duplicado exacto); se filtra
+        # para no imprimir "🎙️ Tú (voz): …" dos veces. Se reinicia por turno,
+        # de modo que repetir la misma pregunta en turnos distintos sí se muestra.
+        last_user_text: Optional[str] = None
         try:
             while True:
                 async for event in session.receive():
                     if isinstance(event, Interrupted):
                         current_response_text.clear()
+                        last_user_text = None
                         if self.player:
                             self.player.stop_and_clear(audio_queue_output)
                         if self.recorder:
@@ -138,7 +144,10 @@ class Assistant:
                         audio_queue_output.put_nowait(event.data)
 
                     elif isinstance(event, UserTextChunk):
-                        self.event_bus.publish(SpeechRecognized(self.conversation_context, text=event.text))
+                        text_clean = event.text.strip()
+                        if text_clean and text_clean != last_user_text:
+                            last_user_text = text_clean
+                            self.event_bus.publish(SpeechRecognized(self.conversation_context, text=event.text))
 
                     elif isinstance(event, TextChunk):
                         if not printed_prefix:
@@ -151,6 +160,7 @@ class Assistant:
                         if full_text:
                             self.event_bus.publish(ResponseGenerated(self.conversation_context, text=full_text))
                         current_response_text.clear()
+                        last_user_text = None
                         self.event_bus.publish(TurnCompleted(self.conversation_context))
                         # Reset de la deduplicación: la misma tool con los mismos args
                         # en un turno FUTURO es una petición legítima, no un duplicado.
