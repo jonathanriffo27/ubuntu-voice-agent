@@ -299,7 +299,9 @@ class AbrirAplicacionTool(BaseTool):
         return (
             "Abre o enfoca una aplicación instalada en el sistema (ej. whatsapp, gmail, telegram, spotify, "
             "terminal, calculadora, code, obsidian). Prioriza SIEMPRE las aplicaciones locales instaladas "
-            "y PWAs en lugar de abrirlas en el navegador web."
+            "y PWAs en lugar de abrirlas en el navegador web. IMPORTANTE: esta tool solo ABRE la ventana; "
+            "para LEER u operar el contenido de un servicio web (correos de Gmail, mensajes de WhatsApp) "
+            "usa directamente 'navegador_web' con la URL del servicio."
         )
 
     @property

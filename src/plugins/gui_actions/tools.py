@@ -59,7 +59,9 @@ class InteractuarGuiTool(BaseTool):
             "Enviar', 'escribe X en el buscador de Telegram', 'pulsa Ctrl+L'). NUNCA pagues, "
             "borres ni confirmes diálogos destructivos sin que el usuario lo haya pedido en su "
             "mensaje. Para acciones de mayor nivel (enviar WhatsApp, correo, abrir app), usa las "
-            "herramientas específicas que ya existen para eso."
+            "herramientas específicas que ya existen para eso. NO sirve para leer el contenido de "
+            "PWAs/webapps (Gmail, WhatsApp Web): sus elementos llegan sin nombres ni texto — para "
+            "eso usa 'navegador_web' con la URL del servicio."
         )
 
     @property
