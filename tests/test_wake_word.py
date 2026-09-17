@@ -2,6 +2,7 @@ import asyncio
 import struct
 import time
 import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from src.voice.wake_word import WakeWordDetector
@@ -316,4 +317,80 @@ class TestRecorderListenLoop:
         assert recorder.state == RecorderState.FOLLOW_UP
         assert recorder.waiting_for_model is False
         assert recorder._follow_up_last_active > 0
+
+    def _make_listen_recorder(self, event_bus):
+        mock_stream = MagicMock()
+        silence_chunk = struct.pack('h' * 512, *([0] * 512))
+        mock_stream.read.return_value = silence_chunk
+        mock_stream.is_active.return_value = True
+
+        voice_config = MagicMock()
+        voice_config.mode = "wake_word"
+        voice_config.wake_word_threshold = 0.35
+        voice_config.follow_up_timeout = 0.05
+        voice_config.activation_sound = False
+        voice_config.server_vad = True
+        return AudioRecorder(mock_stream, event_bus, ConversationContext(), voice_config=voice_config)
+
+    async def _pump_listen(self, recorder, player=None, seconds=0.05):
+        task = asyncio.create_task(recorder.listen(asyncio.Queue(), asyncio.Queue(), player))
+        await asyncio.sleep(seconds)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def test_processing_tool_prevents_standby_timeout(self):
+        """Bug real: con server_vad una búsqueda de 15s dormía el sistema a mitad
+        de la tool porque el timeout de ACTIVE ignoraba processing_tool."""
+        event_bus = EventBus()
+        events = []
+        event_bus.subscribe_all(lambda e: events.append(e))
+
+        recorder = self._make_listen_recorder(event_bus)
+        recorder._state = RecorderState.ACTIVE
+        recorder.processing_tool = True
+        recorder._active_started = time.time() - 1.0  # Timeout ya expirado
+
+        await self._pump_listen(recorder)
+
+        assert recorder.state == RecorderState.ACTIVE  # sigue despierto durante la tool
+        assert not any(isinstance(e, WakeWordStandby) for e in events)
+
+    async def test_standby_ignora_wake_word_mientras_atlas_habla(self):
+        """Bug real: la propia voz de Atlas entrando al micro disparaba 'alexa'
+        con 95-99% de confianza al entrar en espera."""
+        event_bus = EventBus()
+        events = []
+        event_bus.subscribe_all(lambda e: events.append(e))
+
+        recorder = self._make_listen_recorder(event_bus)
+        recorder._state = RecorderState.STANDBY
+        recorder.wake_detector = MagicMock()
+        recorder.wake_detector.predict.return_value = (True, "alexa", 0.99)
+
+        speaking_player = SimpleNamespace(is_speaking=True, last_speech_time=time.time())
+        await self._pump_listen(recorder, player=speaking_player)
+
+        assert recorder.state == RecorderState.STANDBY
+        recorder.wake_detector.predict.assert_not_called()  # ni siquiera evalúa el eco
+        assert not any(isinstance(e, WakeWordDetected) for e in events)
+
+    async def test_standby_detecta_wake_word_con_atlas_en_silencio(self):
+        """La guardia anti-eco no debe bloquear detecciones legítimas."""
+        event_bus = EventBus()
+        events = []
+        event_bus.subscribe_all(lambda e: events.append(e))
+
+        recorder = self._make_listen_recorder(event_bus)
+        recorder._state = RecorderState.STANDBY
+        recorder.wake_detector = MagicMock()
+        recorder.wake_detector.predict.return_value = (True, "alexa", 0.9)
+
+        quiet_player = SimpleNamespace(is_speaking=False, last_speech_time=0.0)
+        await self._pump_listen(recorder, player=quiet_player)
+
+        assert recorder.state == RecorderState.ACTIVE
+        assert any(isinstance(e, WakeWordDetected) for e in events)
 

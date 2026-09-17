@@ -157,6 +157,14 @@ class AudioRecorder:
 
                 # 2. Estado STANDBY: solo detección local de wake word (0 tráfico a Gemini)
                 if self._state == RecorderState.STANDBY:
+                    # Guardia anti-eco: la voz de Atlas sale por los altavoces y entra
+                    # al micrófono; sin este filtro openWakeWord se auto-dispara con la
+                    # propia voz (falsos positivos 0.95+ tras cada respuesta hablada).
+                    if player is not None:
+                        time_since_speech = time.time() - getattr(player, 'last_speech_time', 0.0)
+                        if player.is_speaking or time_since_speech < 0.8:
+                            await asyncio.sleep(0.001)
+                            continue
                     detected, name, score = self.wake_detector.predict(data, threshold=ww_threshold)
                     if detected:
                         self.wake_detector.reset()
@@ -174,7 +182,11 @@ class AudioRecorder:
                     continue
 
                 # 3. Timeout en estado ACTIVE si el usuario no inicia ninguna consulta
-                if self._state == RecorderState.ACTIVE and not user_spoke and not self.waiting_for_model:
+                # OJO: nunca dormir mientras hay una herramienta ejecutándose; con
+                # server_vad el flag waiting_for_model no se usa, y búsquedas largas
+                # (15-45s) mandaban el sistema a STANDBY a mitad de la tool.
+                if (self._state == RecorderState.ACTIVE and not user_spoke
+                        and not self.waiting_for_model and not self.processing_tool):
                     if (time.time() - getattr(self, '_active_started', 0.0)) > follow_up_timeout:
                         self._state = RecorderState.STANDBY
                         play_sound("sleep")
