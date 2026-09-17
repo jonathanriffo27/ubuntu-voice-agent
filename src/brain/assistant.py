@@ -29,7 +29,7 @@ from src.events.base import (
 from src.events.bus import EventBus
 from src.ui.terminal_input import TerminalInteractionManager
 from src.utils.logging import get_logger
-from src.security.monitor import ActionMonitor
+from src.security.monitor import ActionMonitor, monitor_action_name
 from src.security.credentials import get_broker
 
 logger = get_logger("brain.assistant")
@@ -190,7 +190,13 @@ class Assistant:
                                         args_repr = json.dumps(fc.args, ensure_ascii=False, default=str)[:400]
                                     except Exception:
                                         args_repr = str(fc.args)[:400]
-                                    alert = self.action_monitor.record(fc.name, args_repr)
+                                    # Clasificar con la sub-acción si existe (navegador_web.elementos,
+                                    # interactuar_gui.leer...): las tools clasifican así internamente;
+                                    # si el monitor ve solo el nombre pelado, lecturas inocuas cuentan
+                                    # como "risky" y la ráfaga dispara falsos positivos.
+                                    alert = self.action_monitor.record(
+                                        monitor_action_name(fc.name, fc.args), args_repr
+                                    )
                                     if alert:
                                         resumed = False
                                         if self.approval_manager:

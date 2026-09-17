@@ -1,7 +1,7 @@
 """Tests del monitor de anomalías de acciones (Fase 6)."""
 import pytest
 
-from src.security.monitor import ActionMonitor
+from src.security.monitor import ActionMonitor, monitor_action_name
 
 
 class FakeClock:
@@ -97,3 +97,52 @@ class TestPausa:
             mon.record("interactuar_gui", "X")
         alert = mon.record("navegador_web.leer")  # acción inocente, monitor en pausa
         assert alert is not None and alert.rule == "pause"
+
+
+class TestMonitorActionName:
+    """El monitor debe ver la sub-acción punteada, como las tools al clasificar."""
+
+    def test_extrae_sub_accion(self):
+        assert monitor_action_name("navegador_web", {"accion": "elementos"}) == "navegador_web.elementos"
+        assert monitor_action_name("interactuar_gui", {"accion": "Leer"}) == "interactuar_gui.leer"
+
+    def test_sin_accion_devuelve_nombre_pelado(self):
+        assert monitor_action_name("buscar_en_internet", {"query": "x"}) == "buscar_en_internet"
+        assert monitor_action_name("abrir_aplicacion", None) == "abrir_aplicacion"
+        assert monitor_action_name("navegador_web", {"accion": ""}) == "navegador_web"
+
+
+class TestSecuenciaGmailIncidente:
+    """Regresión del incidente real: abrir Gmail -> leer GUI vacía -> fallback
+    navegador con varias lecturas NO debe disparar burst_risky."""
+
+    def test_flujo_lectura_gmail_sin_alerta(self):
+        mon, _ = make_monitor()
+        secuencia = [
+            ("controlar_musica", {"accion": "play"}),
+            ("controlar_musica", {"accion": "pausar"}),
+            ("abrir_aplicacion", {"nombre": "gmail"}),
+            ("interactuar_gui", {"accion": "leer", "app": "gmail"}),
+            ("navegador_web", {"accion": "abrir", "objetivo": "https://mail.google.com/"}),
+            ("navegador_web", {"accion": "leer"}),
+            ("navegador_web", {"accion": "elementos"}),
+            ("navegador_web", {"accion": "pestanas"}),
+        ]
+        import json
+        for nombre, args in secuencia:
+            alert = mon.record(monitor_action_name(nombre, args),
+                               json.dumps(args, ensure_ascii=False))
+            assert alert is None, f"Falso positivo en {nombre}: {alert and alert.reason}"
+
+    def test_racha_risky_real_sigue_disparando(self):
+        """La protección sigue ahí: acciones de escritura repetidas SÍ alertan."""
+        import json
+        mon, _ = make_monitor()
+        alertas = []
+        for i in range(6):
+            args = {"accion": "click", "objetivo": f"boton {i}"}
+            alert = mon.record(monitor_action_name("navegador_web", args),
+                               json.dumps(args, ensure_ascii=False))
+            if alert:
+                alertas.append(alert)
+        assert any(a.rule == "burst_risky" for a in alertas)

@@ -38,7 +38,7 @@ _DEFAULT_RULES = {
         "buscar_*", "consultar_*", "que_suena", "listar_*", "leer_*", "status*",
         "obtener_*", "ver_*", "enfocar_aplicacion",
         "navegador_web.leer", "navegador_web.elementos", "navegador_web.pestanas",
-        "navegador_web.captura",
+        "navegador_web.captura", "interactuar_gui.leer",
     ],
     RiskTier.LOCAL_WRITE: [
         "interactuar_gui", "abrir_*", "cerrar_aplicacion", "reproducir_*",

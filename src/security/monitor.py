@@ -35,6 +35,22 @@ class AnomalyAlert:
     evidence: str      # descripción compacta de la evidencia
 
 
+def monitor_action_name(tool_name: str, args: Optional[dict]) -> str:
+    """
+    Nombre de acción para el monitor: incluye la sub-acción cuando existe
+    (navegador_web + {'accion':'elementos'} -> 'navegador_web.elementos').
+
+    Las herramientas clasifican riesgo así internamente; si el monitor solo ve
+    el nombre pelado, lecturas inocuas cuentan como 'risky' y una ráfaga
+    legítima (ej: leer Gmail) dispara falsos positivos de burst_risky.
+    """
+    if isinstance(args, dict):
+        sub = args.get("accion")
+        if isinstance(sub, str) and sub.strip():
+            return f"{tool_name}.{sub.strip().lower()}"
+    return tool_name
+
+
 class ActionMonitor:
     """Ventana deslizante de acciones con reglas de anomalía."""
 

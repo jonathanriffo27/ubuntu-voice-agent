@@ -27,6 +27,7 @@ tiers:
     - "navegador_web.elementos"
     - "navegador_web.pestanas"
     - "navegador_web.captura"
+    - "interactuar_gui.leer"   # leer el árbol de accesibilidad no modifica nada
 
   local_write:
     - "interactuar_gui"        # contenido sensible eleva a tier 3 automáticamente
