@@ -137,6 +137,52 @@ _JS_NATIVE_SETTER = """
 
 _JS_READ_TEXT = """
 (() => {
+  // Gmail: lectura estructurada y ORDENADA de la bandeja. El innerText plano
+  // de la página mezcla las pestañas de categorías (que llevan vistas previas
+  // de asuntos ajenos, ej. bajo "Social") con las filas reales, y el modelo
+  // respondía con correos que no eran el más reciente. Las filas <tr> del
+  // panel principal van en orden: la primera ES la más reciente.
+  if (location.hostname === 'mail.google.com') {
+    const main = document.querySelector('[role="main"]') || document.body;
+    const MESES = {ene:0,enero:0,feb:1,febrero:2,mar:3,marzo:3,abr:4,abril:4,may:5,mayo:5,
+                   jun:6,junio:6,jul:7,julio:7,ago:8,agosto:8,sep:8,sept:8,septiembre:8,
+                   oct:9,octubre:9,nov:10,noviembre:10,dic:11,diciembre:11,
+                   jan:0,january:0,february:1,march:2,apr:3,april:3,june:5,july:6,
+                   aug:7,august:7,october:9,december:11};
+    const now = new Date();
+    const parseTs = (s) => {
+      s = (s || '').trim().toLowerCase().replace(/\\.$/, '');
+      let m = s.match(/^(\\d{1,2}):(\\d{2})$/);              // hoy: "17:30"
+      if (m) { const d = new Date(now); d.setHours(+m[1], +m[2], 0, 0); return d.getTime(); }
+      m = s.match(/^(\\d{1,2})\\s+([a-záé]{3,10})$/);        // antiguo: "16 sept"
+      if (m && (m[2] in MESES)) return new Date(now.getFullYear(), MESES[m[2]], +m[1]).getTime();
+      if (s === 'ayer' || s === 'yesterday') { const d = new Date(now); d.setDate(d.getDate() - 1); return d.getTime(); }
+      return null;
+    };
+    // Solo filas con timestamp real: la tira de pestañas (Principal — X nuevos —
+    // Social — LinkedIn: …) y filas de anuncios no la tienen; así se descartan.
+    const rows = Array.from(main.querySelectorAll('tr'))
+      .map(r => {
+        const lines = ((r.innerText || '').trim()).split('\\n').map(x => x.trim()).filter(Boolean);
+        if (lines.length < 2) return null;
+        const ts = parseTs(lines[lines.length - 1]);
+        if (ts === null) return null;
+        return {ts, stamp: lines[lines.length - 1],
+                text: lines.slice(0, 3).join(' — ').slice(0, 200)};
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.ts - a.ts)   // el orden del DOM NO es cronológico con pestañas/prioridad
+      .slice(0, 15);
+    if (rows.length) {
+      const items = rows.map((r, i) => `${i + 1}. ${r.text} [${r.stamp}]`);
+      return {
+        title: document.title,
+        url: location.href,
+        text: 'BANDEJA DE GMAIL — correos ordenados por fecha real, de MÁS RECIENTE a más antiguo '
+              + '(el número 1 es siempre el último recibido):\\n' + items.join('\\n'),
+      };
+    }
+  }
   // [role="main"] es clave en SPAs como Gmail: el contenido útil vive en un
   // <div role="main"> (no hay <main> ni <article>); sin él se lee el <body>
   // entero con toda la navegación y la bandeja queda enterrada.

@@ -208,6 +208,14 @@ class TestReadTextYScrollSpa:
                  if m == "Runtime.evaluate"]
         assert any('[role="main"]' in e for e in exprs)
 
+    def test_gmail_read_ordenado_por_timestamp_real(self):
+        """La bandeja de Gmail NO viene en orden cronológico en el DOM (bug
+        real: respondía 'Webull 22:41' siendo 'Pinterest 22:56' el más nuevo).
+        El JS debe extraer el timestamp de cada fila y reordenarlas."""
+        from src.cdp.page import _JS_READ_TEXT
+        assert "mail.google.com" in _JS_READ_TEXT
+        assert "parseTs" in _JS_READ_TEXT and "sort" in _JS_READ_TEXT
+
     async def test_scroll_tiene_fallback_a_contenedor_interno(self):
         """En Gmail window.scrollBy no hace nada (posición 0px tras el scroll):
         el JS debe buscar el contenedor scrollable interno más grande."""
