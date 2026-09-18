@@ -152,8 +152,17 @@ _JS_READ_TEXT = """
     const now = new Date();
     const parseTs = (s) => {
       s = (s || '').trim().toLowerCase().replace(/\\.$/, '');
-      let m = s.match(/^(\\d{1,2}):(\\d{2})$/);              // hoy: "17:30"
-      if (m) { const d = new Date(now); d.setHours(+m[1], +m[2], 0, 0); return d.getTime(); }
+      let m = s.match(/^(\\d{1,2}):(\\d{2})$/);              // reciente: "17:30"
+      if (m) {
+        const d = new Date(now);
+        d.setHours(+m[1], +m[2], 0, 0);
+        // Gmail muestra hora pelada para correos de las últimas ~24h, no solo
+        // de "hoy": una hora EN EL FUTURO ("22:56" a las 9 AM) es de AYER.
+        // Sin este ajuste un correo de anoche se ordenaba por encima de los de
+        // esta mañana ("Pinterest 22:56" por sobre el de Claro de hoy).
+        if (d.getTime() > now.getTime()) d.setDate(d.getDate() - 1);
+        return d.getTime();
+      }
       m = s.match(/^(\\d{1,2})\\s+([a-záé]{3,10})$/);        // antiguo: "16 sept"
       if (m && (m[2] in MESES)) return new Date(now.getFullYear(), MESES[m[2]], +m[1]).getTime();
       if (s === 'ayer' || s === 'yesterday') { const d = new Date(now); d.setDate(d.getDate() - 1); return d.getTime(); }
