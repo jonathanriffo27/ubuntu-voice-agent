@@ -153,12 +153,59 @@ async def test_cerrar_aplicacion_spotify_success():
     mock_proc = MagicMock()
     mock_proc.info = {"pid": 1234, "name": "spotify", "cmdline": ["/usr/bin/spotify"]}
 
-    with patch("src.plugins.system.tools.find_processes_for_app", return_value=[mock_proc]), \
+    # find se llama 2 veces: antes para localizar y después para VERIFICAR
+    # (post-cierre no debe quedar nada).
+    with patch("src.plugins.system.tools.find_processes_for_app",
+               side_effect=[[mock_proc], []]), \
          patch("src.plugins.system.tools.terminate_processes", return_value=1):
-        
+
         res = await tool.execute(ctx, nombre="spotify")
         assert res.success
         assert "cerrado 'spotify'" in res.content.lower()
+
+
+@pytest.mark.asyncio
+async def test_cerrar_aplicacion_reporta_si_sobreviven_procesos():
+    """Bug real: se anunciaba 'cerrada' habiendo matado solo un satélite."""
+    from src.plugins.system.tools import CerrarAplicacionTool
+    tool = CerrarAplicacionTool()
+    ctx = ToolContext(config=None)
+
+    mock_proc = MagicMock()
+
+    with patch("src.plugins.system.tools.find_processes_for_app",
+               side_effect=[[mock_proc], [mock_proc]]), \
+         patch("src.plugins.system.tools.terminate_processes", return_value=1):
+        res = await tool.execute(ctx, nombre="spotify")
+        assert not res.success
+        assert "quedan" in res.content.lower()
+
+
+def test_find_processes_no_excluye_apps_hijas_de_atlas():
+    """Bug real: Atlas lanzó Spotify (plugin de música) → todo el árbol de
+    Spotify quedaba excluido por 'protección' y era imposible cerrarlo.
+    La protección solo debe cubrir Atlas, sus ancestros e hijos de
+    infraestructura (túnel SSH)."""
+    from src.plugins.system import tools as system_tools
+    import psutil
+
+    fake_spotify = MagicMock()
+    fake_spotify.info = {"pid": 9999, "name": "spotify",
+                         "cmdline": ["/usr/share/spotify/spotify"]}
+
+    fake_child = MagicMock()
+    fake_child.pid = 9999
+    fake_child.cmdline.return_value = ["/usr/share/spotify/spotify"]
+
+    fake_self = MagicMock()
+    fake_self.parents.return_value = []
+    fake_self.children.return_value = [fake_child]
+
+    with patch.object(psutil, "Process", return_value=fake_self), \
+         patch.object(psutil, "process_iter", return_value=[fake_spotify]):
+        matches = system_tools.find_processes_for_app("spotify")
+
+    assert [p.info["pid"] for p in matches] == [9999]
 
 
 @pytest.mark.asyncio

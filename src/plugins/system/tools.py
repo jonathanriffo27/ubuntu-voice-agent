@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import os
 import subprocess
@@ -524,7 +525,13 @@ def find_processes_for_app(app_name: str) -> list:
         else:
             target_names = [q]
 
-    # Identificar PIDs de Atlas y su árbol para nunca tocarlos
+    # Identificar los PIDs que NUNCA hay que tocar: el propio Atlas, sus
+    # ancestros (shell/launcher) y sus hijos de INFRAESTRUCTURA (el túnel SSH
+    # a CLIProxy). OJO: las apps que Atlas LANZA para el usuario (Spotify vía
+    # plugin de música, Brave CDP, PWAs) también son hijas suyas en el árbol de
+    # procesos — excluirlas hacía imposible cerrarlas (bug real: "cierra
+    # Spotify" no mataba nada del árbol de Spotify y reportaba éxito).
+    _INFRA_CHILD_MARKERS = ("ssh ",)  # túnel CLIProxy del subagente
     current_pid = os.getpid()
     atlas_pids = {current_pid}
     try:
@@ -532,7 +539,12 @@ def find_processes_for_app(app_name: str) -> list:
         for parent in current_proc.parents():
             atlas_pids.add(parent.pid)
         for child in current_proc.children(recursive=True):
-            atlas_pids.add(child.pid)
+            try:
+                cmd = " ".join(child.cmdline() or [])
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                cmd = ""
+            if any(m in cmd for m in _INFRA_CHILD_MARKERS):
+                atlas_pids.add(child.pid)
     except Exception:
         pass
 
@@ -655,6 +667,21 @@ class CerrarAplicacionTool(BaseTool):
 
             count = terminate_processes(procs)
             logger.info(f"Aplicación '{nombre}' cerrada ({count} procesos terminados).")
+
+            # Verificación post-cierre: nunca declarar éxito sin comprobar que
+            # ya no quedan procesos (bug real: se mataba 1 proceso satélite de
+            # Spotify y se anunciaba "cerrada" con la ventana abierta).
+            await asyncio.sleep(0.4)
+            remaining = find_processes_for_app(nombre_clean)
+            if remaining:
+                return ToolResult(
+                    success=False,
+                    content=(
+                        f"Intenté cerrar '{nombre}' pero aún quedan {len(remaining)} procesos vivos "
+                        f"(la app podría estar reinciándose sola o protegida). Dile al usuario que "
+                        f"puede que necesite cerrarla manualmente."
+                    ),
+                )
             return ToolResult(
                 success=True,
                 content=f"He cerrado '{nombre}' correctamente."
