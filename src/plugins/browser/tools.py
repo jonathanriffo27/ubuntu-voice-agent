@@ -99,60 +99,113 @@ class MultiEngineSearchManager:
             return "sin key"
         return "fallo"
 
+    # Prioridad de desempate cuando varios motores responden a la vez.
+    _PRIORIDAD = {"GOOGLE": 0, "TAVILY": 1, "EXA": 2, "DUCKDUCKGO": 3}
+    # Presupuesto total de la carrera; si nadie responde útil antes, se reporta.
+    _RACE_TIMEOUT_S = 15.0
+    # Ventana extra tras un ganador para recolectar snippets de otros motores
+    # (alimenta la fusión multi-motor sin pagar su latencia completa).
+    _GRACE_S = 0.6
+
+    async def _engine_race(self, q: str, max_results: int):
+        """Todos los motores a la vez; gana el PRIMERO con resultado útil.
+
+        Justificación medida (sep-2026, esta red): Exa responde en ~1.3s y
+        Tavily ~1.9s con buena calidad, mientras Google Grounding se muere en
+        timeout (~5-10s) en gran parte de las sesiones. Con el esquema
+        secuencial 'Google → fallbacks' cada consulta simple pagaba 10-13s;
+        correrlos en paralelo baja el tiempo percibido a ~1.5-2s.
+
+        Tras un ganador hay una ventana de gracia de _GRACE_S para que el resto
+        termine: así la fusión multi-motor conserva sus snippets sin coste real.
+
+        Devuelve (ganador_o_None, ultimo_res, resultados_por_motor, trail).
+        """
+        import time as _tm
+        motores = [
+            ("GOOGLE", self.google_engine.search(q, max_results=max_results)),
+            ("TAVILY", self.tavily_engine.search(q, max_results=max_results)),
+            ("EXA", self.exa_engine.search(q, max_results=max_results)),
+            ("DUCKDUCKGO", self.ddg_engine.search(q, max_results=max_results)),
+        ]
+        restantes = {asyncio.create_task(coro): nombre for nombre, coro in motores}
+        trail: list = []
+        ganador = None
+        ultimo_res = None
+        resultados: dict = {}
+        limite = _tm.monotonic() + self._RACE_TIMEOUT_S
+
+        def _util(r):
+            return r is not None and r.success and (r.answer or r.results)
+
+        def _procesar(done_set):
+            nonlocal ganador, ultimo_res
+            for t in sorted(done_set, key=lambda t: self._PRIORIDAD[restantes[t]]):
+                nombre = restantes.pop(t)
+                try:
+                    r = t.result()
+                except Exception:
+                    trail.append(f"{nombre} ❌")
+                    continue
+                ultimo_res = r
+                resultados[nombre] = r
+                if _util(r):
+                    if ganador is None:
+                        ganador = (nombre, r)
+                        trail.append(f"{nombre} ✅")
+                    else:
+                        trail.append(f"{nombre} ✓")
+                else:
+                    trail.append(f"{nombre} ❌")
+
+        while restantes:
+            espera = max(0.05, limite - _tm.monotonic())
+            done, _ = await asyncio.wait(set(restantes), timeout=espera, return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                break
+            _procesar(done)
+            if ganador is not None and restantes:
+                # Ventana de gracia: dejar que el resto complete (típicamente ya
+                # casi terminan) para alimentar la fusión multi-motor sin pagar
+                # su latencia completa.
+                fin_gracia = _tm.monotonic() + self._GRACE_S
+                espera_gracia = max(0.05, min(fin_gracia - _tm.monotonic(), limite - _tm.monotonic()))
+                done2, _ = await asyncio.wait(set(restantes), timeout=espera_gracia,
+                                              return_when=asyncio.ALL_COMPLETED)
+                if done2:
+                    _procesar(done2)
+                break
+            if ganador is not None:
+                break
+        for t, nombre in restantes.items():
+            t.cancel()
+        return ganador, ultimo_res, resultados, trail
+
     async def search(self, query: str, max_results: int = 4) -> Tuple[Any, str]:
         temporal = self._es_temporal(query)
         q = self._anclar_query(query) if temporal else query
-        trail = []
 
         # 0. Fast-path de clima: wttr.in responde en ~300ms sin consumir cuota de nadie
         weather_res = await self.ddg_engine.weather_fast_path(query)
         if weather_res and weather_res.success and weather_res.answer:
             return weather_res, "CLIMA ✅"
 
-        # 1. Intentar Google Grounding
-        res = await self.google_engine.search(q, max_results=max_results)
-        if res.success and (res.answer or res.results):
-            trail.append("GOOGLE ✅")
-            return await self._verificar_frescura(res, query, temporal, trail)
-        else:
-            motivo = self._motivo_corto(getattr(res, "error", None))
-            trail.append(f"GOOGLE ❌({motivo})" if motivo else "GOOGLE ❌")
+        ganador, ultimo_res, resultados, trail = await self._engine_race(q, max_results)
 
-        # 2. Fallbacks EN PARALELO: Tavily (raw), Exa (si hay key) y DuckDuckGo
-        #    compiten; se elige el primero con contenido según prioridad.
-        res_tavily, res_exa, res_ddg = await asyncio.gather(
-            self.tavily_engine.search(q, max_results=max_results),
-            self.exa_engine.search(q, max_results=max_results),
-            self.ddg_engine.search(q, max_results=max_results),
-        )
-
-        def _util(r):
-            return r.success and (r.answer or r.results)
-
-        candidatos = [("TAVILY", res_tavily), ("EXA", res_exa), ("DUCKDUCKGO", res_ddg)]
-        elegido = None
-        for nombre, r in candidatos:
-            if _util(r) and elegido is None:
-                elegido = (nombre, r)
-                trail.append(f"{nombre} ✅")
-            elif _util(r):
-                trail.append(f"{nombre} ✓")   # respondió, pero no fue el elegido
-            else:
-                trail.append(f"{nombre} ❌")
-
-        if elegido:
-            res_ganador = elegido[1]
-            # Fusión multi-motor: si la fuente ganadora no contesta la pregunta
-            # (caso real: 'último mundial' cayó en un artículo de un partido de
-            # hoy que no decía el campeón), el modelo rellena con su memoria.
-            # Adjuntar los snippets de los otros motores tras el top-2 del
-            # ganador sube mucho la probabilidad de que la respuesta REAL esté
-            # a la vista (y antes del corte de 2500 caracteres de la salida).
+        if ganador:
+            nombre, res_ganador = ganador
+            # Fusión multi-motor con lo QUE YA tenemos de la carrera (sin
+            # re-lanzar queries): si la fuente ganadora no contesta bien, el
+            # modelo rellena con memoria; adjuntar los top-1 de los demás sube
+            # mucho la probabilidad de que la respuesta real esté a la vista.
             ganador_results = list(res_ganador.results or [])
             urls = {r.url for r in ganador_results}
             extra = []
-            for nombre, r in candidatos:
-                if r is res_ganador or not _util(r):
+            for otro_nombre in ("GOOGLE", "TAVILY", "EXA", "DUCKDUCKGO"):
+                if otro_nombre == nombre:
+                    continue
+                r = resultados.get(otro_nombre)
+                if r is None or not (r.success and (r.answer or r.results)):
                     continue
                 for item in (r.results or [])[:1]:
                     if item.url not in urls:
@@ -162,7 +215,7 @@ class MultiEngineSearchManager:
                 res_ganador.results = ganador_results[:2] + extra + ganador_results[2:]
             return await self._verificar_frescura(res_ganador, query, temporal, trail)
 
-        return res_ddg, " → ".join(trail)
+        return ultimo_res, " → ".join(trail)
 
     async def _verificar_frescura(self, res, query_original: str,
                                   temporal: bool, trail: list) -> Tuple[Any, str]:
