@@ -184,3 +184,31 @@ def test_affective_dialog_no_se_envia_en_3_8(monkeypatch):
 
     asyncio.run(go())
     assert capturado["config"].enable_affective_dialog is not True
+
+
+def test_connect_incluye_google_search_nativo(monkeypatch):
+    """Anti 'parametric fallback': grounding server-side junto a los functions."""
+    capturado = _provider_falso(monkeypatch)
+
+    async def go():
+        provider = GeminiProvider()
+        async with provider.connect(system_prompt="s", tools=[_FakeTool()]):
+            pass
+
+    asyncio.run(go())
+    tools = capturado["config"].tools
+    assert tools[0].function_declarations        # nuestras tools intactas
+    assert any(getattr(t, "google_search", None) is not None for t in tools)
+
+
+def test_connect_temperatura_baja_anti_alucinacion(monkeypatch):
+    """Temperatura ~0.1 para que la síntesis no 'rellene' desde memoria."""
+    capturado = _provider_falso(monkeypatch)
+
+    async def go():
+        provider = GeminiProvider()
+        async with provider.connect(system_prompt="s", tools=[]):
+            pass
+
+    asyncio.run(go())
+    assert capturado["config"].generation_config.temperature == 0.1

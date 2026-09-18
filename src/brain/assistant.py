@@ -247,6 +247,22 @@ class Assistant:
 
                                     res_dict = {"result": tool_result.content}
 
+                                    # Workaround documentado contra el "parametric
+                                    # fallback" de modelos Live (ignoran tool results
+                                    # y responden de memoria): para la búsqueda web,
+                                    # entregar los datos junto a una INSTRUCCIÓN de
+                                    # override explícita dentro del FunctionResponse.
+                                    if fc.name == "buscar_en_internet" and tool_result.success:
+                                        res_dict = {
+                                            "datos_obtenidos_ahora_mismo_de_internet": tool_result.content,
+                                            "instruccion_critica": (
+                                                "Estos datos son la realidad ACTUAL obtenida en vivo. "
+                                                "Responde ÚNICAMENTE con ellos. Si tu memoria de "
+                                                "entrenamiento los contradice, tu memoria está "
+                                                "desactualizada: IGNÓRALA por completo."
+                                            ),
+                                        }
+
                                     if tool_result.metadata:
                                         if "inline_data" in tool_result.metadata:
                                             inline = tool_result.metadata["inline_data"]
