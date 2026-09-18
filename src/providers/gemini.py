@@ -78,12 +78,11 @@ class GeminiProvider(BaseProvider):
                 declarations.append(decl)
             gemini_tools = [{"function_declarations": declarations}]
 
-        # Grounding nativo con Google Search en la sesión Live (documentado:
-        # compatible con function_declarations en la misma sesión). Es la capa
-        # más fiable contra el "parametric fallback" reportado: si la pregunta
-        # es factual/temporal, el modelo se ancla a búsquedas reales del lado
-        # del servidor ANTES de generar habla, sin depender de nuestra tool.
-        gemini_tools.append(types.Tool(google_search=types.GoogleSearch()))
+        # NOTA (verificado contra la API en vivo): activar Tool(google_search)
+        # en la sesión Live hace que el SERVIDOR rechace la conexión con
+        # "1011 quota exceeded" — el grounding nativo en Live requiere un plan
+        # de pago/tier superior. NO añadir sin verificar cuota primero.
+        # La defensa equivalente en esta cuenta es nuestra buscar_en_internet.
 
         # Session Resumption: en la primera conexión solo se habilita; en las
         # siguientes se pasa el handle guardado para restaurar el contexto.
@@ -107,11 +106,11 @@ class GeminiProvider(BaseProvider):
             system_instruction=types.Content(parts=[types.Part.from_text(text=system_prompt)]),
             tools=gemini_tools,
             session_resumption=resumption,
-            # Temperatura baja: la recomendación documentada para agentes que
-            # deben responder con hechos anclados a tools. Con la temperatura
-            # por defecto (~1.0) el modelo Live prioriza fluidez y "rellena"
-            # desde memoria paramétrica cuando un resultado le parece dudoso.
-            generation_config=types.GenerationConfig(temperature=0.1),
+            # Temperatura baja (campo DIRECTO de LiveConnectConfig: el SDK
+            # deprecó generation_config aquí). Con la temperatura por defecto
+            # (~1.0) el modelo Live prioriza fluidez y "rellena" desde memoria
+            # paramétrica cuando un resultado de tool le parece dudoso.
+            temperature=0.1,
             # Compresión de ventana de contexto para sesiones largas
             context_window_compression=types.ContextWindowCompressionConfig(
                 trigger_tokens=100000,

@@ -186,8 +186,10 @@ def test_affective_dialog_no_se_envia_en_3_8(monkeypatch):
     assert capturado["config"].enable_affective_dialog is not True
 
 
-def test_connect_incluye_google_search_nativo(monkeypatch):
-    """Anti 'parametric fallback': grounding server-side junto a los functions."""
+def test_connect_no_incluye_google_search_nativo(monkeypatch):
+    """VERIFICADO contra la API en vivo: Tool(google_search) en la sesión Live
+    hace que el servidor rechace la conexión con '1011 quota exceeded' a menos
+    que el plan lo permita. Este test lo bloquea para que nadie lo reintroduzca."""
     capturado = _provider_falso(monkeypatch)
 
     async def go():
@@ -197,12 +199,14 @@ def test_connect_incluye_google_search_nativo(monkeypatch):
 
     asyncio.run(go())
     tools = capturado["config"].tools
-    assert tools[0].function_declarations        # nuestras tools intactas
-    assert any(getattr(t, "google_search", None) is not None for t in tools)
+    assert tools[0].function_declarations
+    assert all(getattr(t, "google_search", None) is None for t in tools)
 
 
 def test_connect_temperatura_baja_anti_alucinacion(monkeypatch):
-    """Temperatura ~0.1 para que la síntesis no 'rellene' desde memoria."""
+    """Temperatura ~0.1 (campo directo; generation_config está deprecado
+    dentro de LiveConnectConfig según el SDK) para que la síntesis no
+    'rellene' desde memoria paramétrica."""
     capturado = _provider_falso(monkeypatch)
 
     async def go():
@@ -211,4 +215,4 @@ def test_connect_temperatura_baja_anti_alucinacion(monkeypatch):
             pass
 
     asyncio.run(go())
-    assert capturado["config"].generation_config.temperature == 0.1
+    assert capturado["config"].temperature == 0.1
