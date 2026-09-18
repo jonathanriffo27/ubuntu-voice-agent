@@ -196,9 +196,12 @@ class AudioRecorder:
                         continue
 
                 # 4. Estado FOLLOW_UP: ventana de espera tras respuesta de Atlas
+                # (processing_tool: turn_complete puede llegar CON la function
+                #   call; sin esta guardia el sistema caía a STANDBY a mitad de
+                #   una herramienta y la wake word se evaluaba durante ella)
                 if self._state == RecorderState.FOLLOW_UP:
                     elapsed = time.time() - self._follow_up_last_active
-                    if elapsed > follow_up_timeout:
+                    if elapsed > follow_up_timeout and not self.processing_tool:
                         self._state = RecorderState.STANDBY
                         play_sound("sleep")
                         self.event_bus.publish(WakeWordStandby(self.conversation_context))
@@ -249,8 +252,14 @@ class AudioRecorder:
                         user_spoke = False
                         self.waiting_for_model = True
                 else:
+                    # Mientras una herramienta se ejecuta el sistema sigue "en
+                    # turno": refrescar los contadores de inactividad para que ni
+                    # el timeout de ACTIVE ni la ventana FOLLOW_UP caduquen.
                     silence_frames = 0
                     user_spoke = False
+                    if self.processing_tool:
+                        self._active_started = time.time()
+                        self._follow_up_last_active = time.time()
 
 
                 await asyncio.sleep(0)

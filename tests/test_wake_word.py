@@ -377,6 +377,23 @@ class TestRecorderListenLoop:
         recorder.wake_detector.predict.assert_not_called()  # ni siquiera evalúa el eco
         assert not any(isinstance(e, WakeWordDetected) for e in events)
 
+    async def test_follow_up_no_expira_durante_tool(self):
+        """turn_complete puede llegar JUNTO a la function call: la ventana
+        FOLLOW_UP no debe caducar mientras la herramienta sigue ejecutándose."""
+        event_bus = EventBus()
+        events = []
+        event_bus.subscribe_all(lambda e: events.append(e))
+
+        recorder = self._make_listen_recorder(event_bus)
+        recorder._state = RecorderState.FOLLOW_UP
+        recorder.processing_tool = True
+        recorder._follow_up_last_active = time.time() - 60.0  # expirada hace rato
+
+        await self._pump_listen(recorder)
+
+        assert recorder.state == RecorderState.FOLLOW_UP  # sigue esperando la tool
+        assert not any(isinstance(e, WakeWordStandby) for e in events)
+
     async def test_standby_detecta_wake_word_con_atlas_en_silencio(self):
         """La guardia anti-eco no debe bloquear detecciones legítimas."""
         event_bus = EventBus()
