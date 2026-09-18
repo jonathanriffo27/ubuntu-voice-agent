@@ -40,7 +40,11 @@ class GoogleGroundingSearchEngine(BaseSearchEngine):
     # timeout x N_modelos antes de caer a Tavily — la lentitud que se percibía.
     TIMEOUT_COOLDOWN_SECONDS = 240  # 4 min
 
-    def __init__(self, model: Optional[str] = None, timeout: float = 5.0):
+    def __init__(self, model: Optional[str] = None, timeout: float = 10.0):
+        # Medido en producción (sep-2026): una llamada con grounding tarda
+        # ~3.9s en caliente y 5-8s en frío; con timeout=5.0 la mitad de las
+        # llamadas moría como 'timeout' y Google quedaba pausado 4 min sin
+        # ser culpable de nada. 10s da cobertura sin disparates.
         self.timeout = timeout
         self._client = None
         # Penalización individual por modelo: timestamp hasta el cual no reintentarlo (429)
