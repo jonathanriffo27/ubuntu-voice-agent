@@ -219,6 +219,34 @@ class TestNotaTemporalEnOutput:
         assert "CONTEXTO TEMPORAL" not in out.content
 
 
+class TestFusionMotores:
+    """Cuando la fuente ganadora no responde la pregunta, los snippets de los
+    otros motores (que también respondieron, '✓') salvan al modelo de inventar."""
+
+    async def test_snippets_de_otros_motores_se_intercalan_tras_top2(self):
+        from src.plugins.browser.engines.base import SearchResultItem
+
+        def item(engine, i):
+            return SearchResultItem(title=f"{engine} {i}", url=f"https://{engine}.test/{i}",
+                                    content=f"contenido {engine} {i}", source_engine=engine)
+
+        tavily = SearchResponse(query="q", answer=None, success=True, engine_used="tavily",
+                                results=[item("tavily", 1), item("tavily", 2), item("tavily", 3)])
+        exa = SearchResponse(query="q", answer=None, success=True, engine_used="exa",
+                             results=[item("exa", 1)])
+        ddg = SearchResponse(query="q", answer=None, success=True, engine_used="duckduckgo",
+                             results=[item("ddg", 1)])
+        m = make_manager(tavily=tavily, exa=exa, ddg=ddg)
+
+        res, _ = await m.search("consulta cualquiera sin temporalidad")
+        urls = [r.url for r in res.results]
+        assert urls == [
+            "https://tavily.test/1", "https://tavily.test/2",  # top-2 del ganador
+            "https://exa.test/1", "https://ddg.test/1",        # aportes de los demás
+            "https://tavily.test/3",                           # resto del ganador
+        ]
+
+
 class TestCadenaDeFallback:
     async def test_prioridad_tavily_luego_exa_luego_ddg(self):
         """Si Tavily falla pero Exa tiene contenido, gana Exa."""

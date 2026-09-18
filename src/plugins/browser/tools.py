@@ -141,7 +141,26 @@ class MultiEngineSearchManager:
                 trail.append(f"{nombre} ❌")
 
         if elegido:
-            return await self._verificar_frescura(elegido[1], query, temporal, trail)
+            res_ganador = elegido[1]
+            # Fusión multi-motor: si la fuente ganadora no contesta la pregunta
+            # (caso real: 'último mundial' cayó en un artículo de un partido de
+            # hoy que no decía el campeón), el modelo rellena con su memoria.
+            # Adjuntar los snippets de los otros motores tras el top-2 del
+            # ganador sube mucho la probabilidad de que la respuesta REAL esté
+            # a la vista (y antes del corte de 2500 caracteres de la salida).
+            ganador_results = list(res_ganador.results or [])
+            urls = {r.url for r in ganador_results}
+            extra = []
+            for nombre, r in candidatos:
+                if r is res_ganador or not _util(r):
+                    continue
+                for item in (r.results or [])[:1]:
+                    if item.url not in urls:
+                        urls.add(item.url)
+                        extra.append(item)
+            if extra:
+                res_ganador.results = ganador_results[:2] + extra + ganador_results[2:]
+            return await self._verificar_frescura(res_ganador, query, temporal, trail)
 
         return res_ddg, " → ".join(trail)
 
