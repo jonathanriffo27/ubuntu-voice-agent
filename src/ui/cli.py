@@ -155,8 +155,11 @@ class CLIInterface:
             self._flush_stream()
             print("\r" + " " * 45 + "\r", end="", flush=True)
             res = event.result
-            if isinstance(res, dict) and "result" in res:
-                res_str = str(res["result"]).replace('\n', ' ')
+            if isinstance(res, dict):
+                # La salida de búsqueda llega envuelta: mostrar el contenido
+                # (trail + snippets) en vez del repr crudo del dict.
+                display_val = res.get("result") or res.get("datos_obtenidos_ahora_mismo_de_internet") or res
+                res_str = str(display_val).replace('\n', ' ')
             else:
                 res_str = str(res).replace('\n', ' ')
             if len(res_str) > 100:
