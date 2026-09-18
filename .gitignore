@@ -7,6 +7,7 @@ __pycache__/
 jarvis_memory.json
 atlas_knowledge.json
 atlas_trajectory.json
+atlas_reminders.json
 *.json.tmp
 *.log
 genai_error.txt
