@@ -39,6 +39,17 @@ class GeminiProvider(BaseProvider):
     def _save_session_handle(self, handle: str) -> None:
         self._session_handle = handle
 
+    def reset_session_handle(self) -> None:
+        """Descarta el handle de session resumption.
+
+        Los handles CADUCAN: si una reconexión con handle guardado falló, próximo
+        intento debe abrir sesión limpia. Antes de esto, un handle vencido mataba
+        a Atlas con 5 fallos rápidos en ráfaga ('Se excedió el número máximo de
+        reconexiones')."""
+        if self._session_handle:
+            logger.info("Descartando handle de session resumption (la reconexión con él falló); próxima sesión será limpia.")
+            self._session_handle = None
+
     @asynccontextmanager
     async def connect(self, system_prompt: str, tools: List[BaseTool]) -> AsyncIterator[ProviderSession]:
         """

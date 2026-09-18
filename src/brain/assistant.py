@@ -50,7 +50,7 @@ class Assistant:
         trajectory_manager=None,
         action_monitor: "ActionMonitor" = None,
         credential_broker=None,
-        max_reconnect_attempts: int = 5,
+        max_reconnect_attempts: Optional[int] = None,
         reconnect_initial_backoff: float = 1.0,
         reconnect_max_backoff: float = 30.0
     ):
@@ -460,7 +460,9 @@ class Assistant:
         is_first_connection = True
 
         try:
-            while attempt < self.max_reconnect_attempts:
+            # None = reintentos ilimitados: un asistente de voz no debe morir
+            # permanentemente por una racha de fallos de conexión.
+            while self.max_reconnect_attempts is None or attempt < self.max_reconnect_attempts:
                 attempt += 1
                 session_start_time = time.time()
                 if is_first_connection:
@@ -523,7 +525,9 @@ class Assistant:
                                 if isinstance(exc, asyncio.CancelledError):
                                     return
                                 err_str = str(exc).lower()
-                                if "1008" in err_str or "1011" in err_str or "1006" in err_str or "abnormal closure" in err_str or "aborted" in err_str or "closed" in err_str or "internal error" in err_str:
+                                # "go_away" = el servidor avisa que cerrará la
+                                # sesión (TTL ~15 min): reconexión transparente.
+                                if "1008" in err_str or "1011" in err_str or "1006" in err_str or "abnormal closure" in err_str or "aborted" in err_str or "closed" in err_str or "internal error" in err_str or "go_away" in err_str:
                                     is_idle_timeout = True
                                 else:
                                     logger.error(f"Fallo en tarea concurrente: {exc}")
@@ -536,27 +540,37 @@ class Assistant:
                 except Exception as e:
                     session_duration = time.time() - session_start_time
                     err_str = str(e).lower()
-                    is_idle_timeout = "1008" in err_str or "1011" in err_str or "1006" in err_str or "abnormal closure" in err_str or "aborted" in err_str or "closed" in err_str or "internal error" in err_str
+                    is_idle_timeout = ("1008" in err_str or "1011" in err_str or "1006" in err_str
+                                       or "abnormal closure" in err_str or "aborted" in err_str
+                                       or "closed" in err_str or "internal error" in err_str
+                                       or "go_away" in err_str)
 
                     # Si la sesión estuvo viva y saludable por más de 15 segundos (ej. idle timeout),
                     # reiniciar el contador para no morir por inactividad prolongada natural.
                     if session_duration > 15.0:
                         attempt = 1
 
+                    # Los handles de session resumption CADUCAN en el servidor. Si una
+                    # reconexión con handle falló (o la sesión apenas vivió), el próximo
+                    # intento debe abrir sesión limpia — reutilizarlo en bucle mataba a
+                    # Atlas con 5 fallos rápidos tras ~15 min de inactividad.
+                    if attempt > 1 and hasattr(self.provider, "reset_session_handle"):
+                        self.provider.reset_session_handle()
+
                     if is_idle_timeout:
                         logger.info("Sesión con el proveedor reiniciada (corte o error transitorio). Reconectando...")
                         reconnect_wait = 0.5
                     else:
-                        logger.warning(f"Conexión con el proveedor interrumpida: {e}")
+                        logger.warning(f"Conexión con el proveedor interrumpida (intento {attempt}): {e}")
                         reconnect_wait = backoff
+                        backoff = min(backoff * 2.0, self.reconnect_max_backoff)
 
-                    if attempt >= self.max_reconnect_attempts:
+                    if (self.max_reconnect_attempts is not None
+                            and attempt >= self.max_reconnect_attempts):
                         logger.critical(f"Se excedió el número máximo de reconexiones ({self.max_reconnect_attempts}).")
                         break
 
                     await asyncio.sleep(reconnect_wait)
-                    if not is_idle_timeout:
-                        backoff = min(backoff * 2.0, self.reconnect_max_backoff)
                 finally:
                     self._active_session = None
 

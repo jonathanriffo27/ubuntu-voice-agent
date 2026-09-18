@@ -131,3 +131,55 @@ async def test_assistant_silent_reconnection_events_and_greeting():
     assert len(started_events) == 1
     assert len(reconnected_events) == 1
     assert reconnected_events[0].attempt == 2
+
+
+class FlappingReconnectProvider(BaseProvider):
+    """1ª conexión vive y muere por idle (1008); la reconexión falla rápido
+    (simula el handle de session resumption caducado: bug real — tras ~15 min
+    idle Atlas moría con 'Se excedió el número máximo de reconexiones')."""
+
+    def __init__(self):
+        self.reset_calls = 0
+        self.connect_calls = 0
+
+    def reset_session_handle(self):
+        self.reset_calls += 1
+
+    @asynccontextmanager
+    async def connect(self, system_prompt: str, tools: list):
+        self.connect_calls += 1
+        if self.connect_calls == 1:
+            yield FakeMockSession()  # muere de inmediato con 1008
+        elif self.connect_calls == 2:
+            raise ConnectionError("1008 policy violation: expired session handle")
+        else:
+            raise KeyboardInterrupt  # salida limpia para acabar el bucle
+
+
+@pytest.mark.asyncio
+async def test_reconnect_descarta_handle_caducado_y_no_muere():
+    provider = FlappingReconnectProvider()
+    assistant = Assistant(
+        provider=provider,
+        registry=ToolRegistry(),
+        event_bus=EventBus(),
+        max_reconnect_attempts=None,     # producción: ilimitado
+        reconnect_initial_backoff=0.01,
+        reconnect_max_backoff=0.02,
+    )
+    assistant.in_stream = MagicMock()
+    assistant.out_stream = MagicMock()
+    assistant.p = MagicMock()
+    assistant.recorder = MagicMock()
+    assistant.recorder.listen = AsyncMock()
+    assistant.player = MagicMock()
+    assistant.player.play = AsyncMock()
+
+    with patch("pyaudio.PyAudio"), \
+         patch("src.brain.assistant.play_sound"), \
+         patch("src.voice.recorder.AudioRecorder.load_wake_word", new_callable=AsyncMock), \
+         patch("src.voice.recorder.AudioRecorder.calibrate", new_callable=AsyncMock):
+        await assistant.run_async()
+
+    assert provider.reset_calls >= 1     # el handle vencido se descartó
+    assert provider.connect_calls >= 3   # y Atlas siguió intentando en vez de morir
