@@ -14,12 +14,26 @@ async def test_web_overlay_initialization():
     bus = EventBus()
     overlay = WebOverlayServer(bus, port=8888)
     assert overlay.port == 8888
+    assert overlay.host == "127.0.0.1"   # nunca toda la red por defecto
     assert len(overlay.sockets) == 0
 
     # Emitir eventos no debe fallar cuando no hay sockets
     ctx = ConversationContext()
     bus.publish(VoiceListeningStarted(ctx))
     bus.publish(ToolStarted(ctx, tool_name="demo_tool", arguments={"x": 1}))
+
+
+@pytest.mark.asyncio
+async def test_web_overlay_bind_es_loopback():
+    """Seguridad: el HUD (trayectoria con correos, HITL, mute) solo escucha en
+    localhost; antes bindeaba 0.0.0.0 y quedaba expuesto a toda la red local."""
+    overlay = WebOverlayServer(EventBus(), port=0)  # puerto efímero
+    await overlay.start()
+    try:
+        addr = overlay._runner.addresses[0]
+        assert addr[0] == "127.0.0.1"
+    finally:
+        await overlay.stop()
 
 
 @pytest.mark.asyncio

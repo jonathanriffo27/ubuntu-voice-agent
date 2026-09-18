@@ -68,6 +68,7 @@ if __name__ == "__main__":
         overlay_server = WebOverlayServer(
             event_bus,
             port=config.ui.overlay_port,
+            host=getattr(config.ui, "overlay_host", "127.0.0.1"),
             approval_manager=approval_manager,
             trajectory_manager=trajectory_manager,
             reminder_scheduler=reminder_scheduler

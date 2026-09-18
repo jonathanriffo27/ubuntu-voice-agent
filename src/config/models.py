@@ -46,6 +46,9 @@ class ToolsConfig:
 class UIConfig:
     overlay_enabled: bool = True
     overlay_port: int = 7890
+    # Loopback por defecto: el HUD expone trayectoria (correos), recordatorios
+    # y aprobaciones HITL. Solo cambiar a 0.0.0.0 si el usuario sabe lo que hace.
+    overlay_host: str = "127.0.0.1"
     auto_open_browser: bool = False
 
 

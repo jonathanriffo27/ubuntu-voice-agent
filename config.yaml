@@ -22,6 +22,9 @@ vision:
 ui:
   overlay_enabled: true
   overlay_port: 7890
+  # Bindeo del HUD. 127.0.0.1 = solo este PC (recomendado: el HUD expone
+  # trayectoria/correos y aprobaciones). 0.0.0.0 = toda la red local.
+  overlay_host: 127.0.0.1
   auto_open_browser: false
 
 developer_agent:

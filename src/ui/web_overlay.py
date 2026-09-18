@@ -27,10 +27,15 @@ class WebOverlayServer:
         on_toggle_pause_callback: Optional[Callable[[], Any]] = None,
         approval_manager=None,
         trajectory_manager=None,
-        reminder_scheduler=None
+        reminder_scheduler=None,
+        host: str = "127.0.0.1"
     ):
         self.event_bus = event_bus
         self.port = port
+        # El HUD expone trayectoria (correos), recordatorios, mute y aprobaciones
+        # HITL: NUNCA por defecto a toda la red local. Loopback salvo que el
+        # usuario lo abra explícitamente con overlay_host en config.yaml.
+        self.host = host
         self.on_user_input = on_user_input_callback
         self.on_toggle_pause = on_toggle_pause_callback
         self.approval_manager = approval_manager
@@ -164,12 +169,12 @@ class WebOverlayServer:
 
     async def start(self, auto_open: bool = False) -> None:
         """Inicia el servidor HTTP y WebSocket."""
-        logger.info(f"Iniciando Dashboard HUD en http://localhost:{self.port}")
+        logger.info(f"Iniciando Dashboard HUD en http://{self.host}:{self.port}")
         self._runner = web.AppRunner(self.app)
         await self._runner.setup()
-        self._site = web.TCPSite(self._runner, '0.0.0.0', self.port)
+        self._site = web.TCPSite(self._runner, self.host, self.port)
         await self._site.start()
-        logger.info(f"⚡ Dashboard HUD activo en http://localhost:{self.port}")
+        logger.info(f"⚡ Dashboard HUD activo en http://{self.host}:{self.port}")
 
         if auto_open:
             try:
