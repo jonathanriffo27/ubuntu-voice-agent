@@ -31,6 +31,10 @@ class AudioPlayer:
         self.out_stream = out_stream
         self.is_speaking = False
         self.last_speech_time = 0.0
+        # Diagnóstico: bytes efectivamente escritos al hardware en el segmento
+        # de habla actual (permite verificar que el audio no solo llega del
+        # proveedor sino que se reproduce físicamente).
+        self._seg_bytes = 0
 
     def stop_and_clear(self, audio_queue_output: asyncio.Queue):
         """Detiene la reproducción y vacía la cola de audio pendiente."""
@@ -51,10 +55,14 @@ class AudioPlayer:
         while True:
             try:
                 data = await audio_queue_output.get()
+                if not self.is_speaking:
+                    self._seg_bytes = 0
+                    logger.debug("▶️ Inicio de segmento de reproducción")
                 self.is_speaking = True
 
                 # Escribir chunk al hardware de audio de forma fluida
                 await asyncio.to_thread(self.out_stream.write, data, exception_on_underflow=False)
+                self._seg_bytes += len(data)
                 self.last_speech_time = time.time()
 
                 # Si no quedan más chunks en la cola inmediata, mantener is_speaking activo
@@ -63,9 +71,14 @@ class AudioPlayer:
                     try:
                         next_data = await asyncio.wait_for(audio_queue_output.get(), timeout=0.20)
                         await asyncio.to_thread(self.out_stream.write, next_data, exception_on_underflow=False)
+                        self._seg_bytes += len(next_data)
                         self.last_speech_time = time.time()
                     except asyncio.TimeoutError:
                         self.is_speaking = False
+                        logger.info(
+                            f"🔊 Segmento escrito al hardware de audio: {self._seg_bytes} bytes "
+                            f"(~{self._seg_bytes / 48000:.1f}s a 24kHz)"
+                        )
                         self.last_speech_time = time.time()
             except asyncio.CancelledError:
                 self.is_speaking = False

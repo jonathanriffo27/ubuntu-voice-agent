@@ -3,6 +3,7 @@ import math
 import struct
 import sys
 import time
+from collections import deque
 from enum import Enum, auto
 from typing import Optional
 
@@ -46,6 +47,10 @@ class AudioRecorder:
         self.processing_tool = False
         self.waiting_for_model = False
         self.vad = VoiceActivityDetector(sample_rate=AUDIO_IN_RATE)
+        # Última vez que el VAD LOCAL detectó voz humana real. El asistente la
+        # usa para distinguir un barge-in genuino de un falso positivo del VAD
+        # del servidor (gemini-3.8 lo dispara con ruido ambiente).
+        self.last_local_voice_time: float = 0.0
 
         # Estado inicial según configuración
         mode = getattr(voice_config, 'mode', 'always_on') if voice_config else 'always_on'
@@ -133,6 +138,9 @@ class AudioRecorder:
         frames_per_second = AUDIO_IN_RATE / CHUNK_SIZE
         max_silence_seconds = 0.9
         user_spoke = False
+        # Pre-roll (~380ms a 512 samples/frame) para no recortar el inicio de la
+        # locución cuando el gate anti-ruido abre el stream al detectar voz.
+        pre_roll: deque = deque(maxlen=12)
 
         follow_up_timeout = float(getattr(self._voice_config, 'follow_up_timeout', 7.0)) if self._voice_config else 7.0
         activation_sound = bool(getattr(self._voice_config, 'activation_sound', True)) if self._voice_config else True
@@ -227,6 +235,29 @@ class AudioRecorder:
 
                     # Captura activa de voz con VAD
                     is_voice = self.vad.is_speech(data, current_threshold=self.silence_threshold)
+                    if is_voice:
+                        # Evidencia local de voz real: valida si un "interrupted"
+                        # del servidor fue barge-in genuino o falso positivo.
+                        self.last_local_voice_time = time.time()
+
+                    # Gate anti-ruido (gemini-3.8, VAD del servidor agresivo):
+                    # mientras se busca el inicio de la locución (user_spoke
+                    # aún False) SOLO se envía audio con voz real al servidor.
+                    # Antes se enviaba TODO el ambiente (TV, teclado, respiración)
+                    # y el VAD remoto lo leía como "usuario hablando", generando
+                    # interruptions fantasma que vaciaban la cola de audio de
+                    # Atlas (síntoma: texto visible, voz muda).
+                    if not user_spoke and not is_voice:
+                        pre_roll.append(data)
+                        await asyncio.sleep(0)
+                        continue
+
+                    # Onset de voz: vaciar el pre-roll (~380ms) para no cortar
+                    # las primeras sílabas de la frase, y luego el frame actual.
+                    if not user_spoke and is_voice:
+                        while pre_roll:
+                            await audio_queue_input.put(pre_roll.popleft())
+
                     await audio_queue_input.put(data)
 
                     if not is_voice:

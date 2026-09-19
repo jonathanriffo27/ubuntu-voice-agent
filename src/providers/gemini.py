@@ -106,11 +106,16 @@ class GeminiProvider(BaseProvider):
             system_instruction=types.Content(parts=[types.Part.from_text(text=system_prompt)]),
             tools=gemini_tools,
             session_resumption=resumption,
-            # Temperatura baja (campo DIRECTO de LiveConnectConfig: el SDK
-            # deprecó generation_config aquí). Con la temperatura por defecto
-            # (~1.0) el modelo Live prioriza fluidez y "rellena" desde memoria
-            # paramétrica cuando un resultado de tool le parece dudoso.
-            temperature=0.1,
+            # SIN 'temperature': medido con sonda A/B contra la API en vivo
+            # (2026-09-19): temperature=0.1 hace que gemini-3.8-live genere
+            # SILENCIO PURO en vez de voz — 110.9s de PCM con 0% de frames
+            # hablados (peak RMS 310 vs ~10000 de voz real), mientras la
+            # transcripción sale correcta ("el modelo cree que habló"). Es
+            # intermitente: a veces el turno sale normal, a veces 5s de
+            # silencio, a veces >100s. Con la temperatura por defecto (~1.0)
+            # el audio es siempre voz real. La defensa anti 'parametric
+            # fallback' queda cubierta por tools BLOCKING + override en los
+            # FunctionResponse (no por temperatura).
             # Compresión de ventana de contexto para sesiones largas
             context_window_compression=types.ContextWindowCompressionConfig(
                 trigger_tokens=100000,

@@ -84,6 +84,13 @@ class Assistant:
         self.recorder: Optional[AudioRecorder] = None
         self.player: Optional[AudioPlayer] = None
         self._active_session: Optional[ProviderSession] = None
+        # Marca temporal del último mensaje de TEXTO del usuario (HUD/terminal).
+        # Sirve para el barge-in local por teclado y para validar interrupciones
+        # del servidor que realmente provienen de una entrada del usuario.
+        self._last_user_text_input: float = 0.0
+        # Referencia a la cola de reproducción (asignada en run_async) para que
+        # send_text_message pueda cortar el audio viejo al instante.
+        self._audio_out_queue: Optional[asyncio.Queue] = None
 
     async def send_realtime(self, session: ProviderSession, audio_queue_input: asyncio.Queue):
         """Consume chunks de audio del micrófono y los envía al proveedor en tiempo real."""
@@ -127,10 +134,47 @@ class Assistant:
         # para no imprimir "🎙️ Tú (voz): …" dos veces. Se reinicia por turno,
         # de modo que repetir la misma pregunta en turnos distintos sí se muestra.
         last_user_text: Optional[str] = None
+        # Diagnóstico de voz: contar los PCM que llegan del proveedor por turno
+        # permite distinguir "el modelo no envía audio" de "el audio se borra
+        # antes de reproducirse" (el texto SIEMPRE se ve porque llega por la
+        # transcripción, aunque el audio nunca llegue o sea vaciado por un
+        # interrupted del VAD del servidor).
+        audio_chunks_turn = 0
+        audio_bytes_turn = 0
+        audio_chunks_session = 0
         try:
             while True:
                 async for event in session.receive():
                     if isinstance(event, Interrupted):
+                        # Filtro anti falso-positivo (gemini-3.8, VAD agresivo):
+                        # un barge-in REAL implica que el micrófono local captó
+                        # voz del usuario en el último ~1.5s. Si no hay voz local
+                        # reciente, el servidor reaccionó a ruido ambiente (o a
+                        # estados transitorios) y vaciar la cola dejaba a Atlas
+                        # MUDO — el texto se veía igual porque llega por la
+                        # transcripción, mientras todo el audio se descartaba.
+                        last_voice = getattr(self.recorder, "last_local_voice_time", 0.0) if self.recorder else 0.0
+                        # Un `interrupted` también es legítimo si acaba de llegar
+                        # texto del usuario por HUD/terminal (barge-in por teclado).
+                        recent_voice = (time.time() - last_voice) <= 1.5
+                        recent_typing = (time.time() - self._last_user_text_input) <= 1.5
+                        if not recent_voice and not recent_typing:
+                            logger.warning(
+                                "⚡ Interrupción del servidor SIN voz local reciente → ignorada "
+                                "(falso positivo del VAD); el audio en cola sigue reproduciéndose."
+                            )
+                            # No se vacía la cola ni el texto; solo se reabre el
+                            # micrófono (el gate anti-ruido del recorder evita que
+                            # el ambiente vuelva a disparar interrupciones).
+                            if self.recorder:
+                                self.recorder.waiting_for_model = False
+                            continue
+                        logger.warning(
+                            f"⚡ INTERRUPTED confirmado (voz local o texto reciente = barge-in real): "
+                            f"vaciando cola ({audio_chunks_turn} chunks / {audio_bytes_turn} bytes)."
+                        )
+                        audio_chunks_turn = 0
+                        audio_bytes_turn = 0
                         current_response_text.clear()
                         last_user_text = None
                         if self.player:
@@ -142,6 +186,14 @@ class Assistant:
 
                     elif isinstance(event, AudioChunk):
                         audio_queue_output.put_nowait(event.data)
+                        audio_chunks_turn += 1
+                        audio_bytes_turn += len(event.data)
+                        audio_chunks_session += 1
+                        if audio_chunks_session == 1:
+                            logger.info(
+                                "🔊 Primer chunk PCM del proveedor recibido: la ruta de voz "
+                                "(API → cliente) está viva."
+                            )
 
                     elif isinstance(event, UserTextChunk):
                         text_clean = event.text.strip()
@@ -162,6 +214,12 @@ class Assistant:
                         current_response_text.clear()
                         last_user_text = None
                         self.event_bus.publish(TurnCompleted(self.conversation_context))
+                        logger.info(
+                            f"🔊 Fin de turno: audio del proveedor = {audio_chunks_turn} chunks / "
+                            f"{audio_bytes_turn} bytes (~{audio_bytes_turn / 48000:.1f}s a 24kHz)"
+                        )
+                        audio_chunks_turn = 0
+                        audio_bytes_turn = 0
                         # Reset de la deduplicación: la misma tool con los mismos args
                         # en un turno FUTURO es una petición legítima, no un duplicado.
                         self._duplicate_guard.clear()
@@ -334,6 +392,14 @@ class Assistant:
         """Permite enviar mensajes de texto al modelo (desde el HUD web o API)."""
         if self._active_session:
             logger.info(f"💬 [HUD -> Atlas]: {text}")
+            self._last_user_text_input = time.time()
+            # Barge-in local por teclado: si Atlas seguía hablando de la respuesta
+            # anterior, se corta al instante. Sin esto, el audio nuevo se encolaba
+            # DETRÁS de la cola vieja y el retraso percibido se acumulaba turno a
+            # turno (5s, 10s...: el usuario tecleaba la siguiente pregunta mientras
+            # aún sonaba la cola de la anterior).
+            if self.player and self._audio_out_queue is not None:
+                self.player.stop_and_clear(self._audio_out_queue)
             if self.recorder:
                 self.recorder.waiting_for_model = True
             await self._active_session.send_text(text, end_of_turn=True)
@@ -423,6 +489,7 @@ class Assistant:
 
         q_in = asyncio.Queue()
         q_out = asyncio.Queue()
+        self._audio_out_queue = q_out
 
         # 1. Suscribir callback de subagente de desarrollo una sola vez
         def _on_task_completed(event: TaskCompleted):

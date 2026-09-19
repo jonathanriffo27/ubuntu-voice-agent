@@ -203,10 +203,13 @@ def test_connect_no_incluye_google_search_nativo(monkeypatch):
     assert all(getattr(t, "google_search", None) is None for t in tools)
 
 
-def test_connect_temperatura_baja_anti_alucinacion(monkeypatch):
-    """Temperatura ~0.1 (campo directo; generation_config está deprecado
-    dentro de LiveConnectConfig según el SDK) para que la síntesis no
-    'rellene' desde memoria paramétrica."""
+def test_connect_sin_temperatura_en_live(monkeypatch):
+    """NUNCA fijar temperature en la sesión Live: medido con sonda A/B contra
+    la API real (2026-09-19) — temperature=0.1 hace que gemini-3.8-live
+    genere PCM de silencio puro (0% frames hablados) aunque la transcripción
+    sea correcta: turnos de 110s de 'nada audible'. Con el default (~1.0) el
+    audio siempre contiene voz. La defensa anti-alucinación vive en tools
+    BLOCKING + override del FunctionResponse, no aquí."""
     capturado = _provider_falso(monkeypatch)
 
     async def go():
@@ -215,4 +218,4 @@ def test_connect_temperatura_baja_anti_alucinacion(monkeypatch):
             pass
 
     asyncio.run(go())
-    assert capturado["config"].temperature == 0.1
+    assert capturado["config"].temperature is None
