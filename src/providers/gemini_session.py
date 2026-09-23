@@ -13,10 +13,14 @@ logger = get_logger("providers.gemini")
 class GeminiSession(ProviderSession):
     """Adapta la sesión nativa de Gemini Live API a la interfaz unificada ProviderSession."""
 
-    def __init__(self, native_session, on_session_handle: Optional[Callable[[str], None]] = None):
+    def __init__(self, native_session, on_session_handle: Optional[Callable[[str], None]] = None,
+                 strict_turn_end: bool = False):
         self._session = native_session
         # Callback para persistir el handle de session resumption en el proveedor
         self._on_session_handle = on_session_handle
+        # Protocolo 3.8+: turno cierra SOLO con turn_complete (+ interaction_status
+        # == IDLE si viene). En modo legacy se conserva el or generation_complete.
+        self._strict_turn_end = strict_turn_end
 
     async def send_audio(self, data: bytes, sample_rate: int = 16000) -> None:
         await self._session.send_realtime_input(
@@ -123,8 +127,23 @@ class GeminiSession(ProviderSession):
                         elif getattr(part, "text", None):
                             yield TextChunk(text=part.text)
 
-                is_turn_complete = getattr(sc, "turn_complete", False) or getattr(sc, "generation_complete", False)
-                if is_turn_complete:
+                is_turn_complete = getattr(sc, "turn_complete", False)
+                is_generation_complete = getattr(sc, "generation_complete", False)
+                interaction_status = getattr(sc, "interaction_status", None)
+                if self._strict_turn_end:
+                    # Protocolo 3.8+ (guía de migración Live API + docstring del SDK):
+                    # cada turno emite DOS cierres — generation_complete al terminar la
+                    # generación y turn_complete al terminar el playback — porque el
+                    # modelo "espera a que el audio termine de reproducirse". Y
+                    # turn_complete "ya no equivale a sesión ociosa": la señal
+                    # autoritativa es interaction_status == IDLE (siempre enviada junto
+                    # a turn_complete). Antes, mapear AMBOS flags duplicaba el evento
+                    # por turno: la ventana follow-up se abría dos veces y el segundo
+                    # TurnComplete re-despertaba a Atlas tras un sueño deliberado.
+                    if is_turn_complete and interaction_status in (None, types.InteractionStatus.IDLE):
+                        yield TurnComplete()
+                elif is_turn_complete or is_generation_complete:
+                    # Protocolo legacy (modelos 2.x/3.1): conservar comportamiento previo.
                     yield TurnComplete()
 
 

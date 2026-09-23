@@ -192,3 +192,68 @@ async def test_gemini_session_send_tool_response_translation():
     assert native.sent_responses[0].name == "buscar_en_internet"
     assert native.sent_responses[0].id == "call_1"
     assert native.sent_responses[0].response == {"result": "Soleado 22C"}
+
+
+class MockServerContent38:
+    """server_content del protocolo 3.8+: expone generation_complete, turn_complete
+    e interaction_status (siempre enviada junto a turn_complete, según docstring del SDK)."""
+    def __init__(self, generation_complete=False, turn_complete=False, interaction_status=None,
+                 interrupted=False, model_turn=None):
+        self.generation_complete = generation_complete
+        self.turn_complete = turn_complete
+        self.interaction_status = interaction_status
+        self.interrupted = interrupted
+        self.model_turn = model_turn
+
+
+@pytest.mark.asyncio
+async def test_gemini38_strict_mode_emite_un_solo_turncomplete_por_turno():
+    """Bug real: la Live API 3.8 emite generation_complete Y turn_complete por cada
+    turno (el segundo espera a que termine el playback). Mapear ambos duplicaba el
+    evento y re-despertaba a Atlas (FOLLOW_UP) tras un sueño deliberado."""
+    from google.genai import types
+    messages = [
+        # Fin de generación (el modelo sigue reproduciendo/terminando playback)
+        MockGeminiMsg(server_content=MockServerContent38(
+            generation_complete=True, interaction_status=None)),
+        # Cierre real del turno: interaction_status=IDLE siempre acompaña a turn_complete
+        MockGeminiMsg(server_content=MockServerContent38(
+            turn_complete=True, interaction_status=types.InteractionStatus.IDLE)),
+    ]
+    session = GeminiSession(MockNativeGeminiSession(messages), strict_turn_end=True)
+
+    events = [e async for e in session.receive()]
+
+    turn_completes = [e for e in events if isinstance(e, TurnComplete)]
+    assert len(turn_completes) == 1  # un solo cierre por turno, no dos
+
+
+@pytest.mark.asyncio
+async def test_gemini38_strict_mode_no_cierra_turno_mientras_in_progress():
+    """Guía de migración 3.8: turn_complete ya no equivale a sesión ociosa; con
+    interaction_status == IN_PROGRESS el servidor sigue procesando y el cliente
+    NO debe considerar el turno cerrado (ni dormir, ni abrir follow-up)."""
+    from google.genai import types
+    messages = [
+        MockGeminiMsg(server_content=MockServerContent38(
+            turn_complete=True, interaction_status=types.InteractionStatus.IN_PROGRESS)),
+    ]
+    session = GeminiSession(MockNativeGeminiSession(messages), strict_turn_end=True)
+
+    events = [e async for e in session.receive()]
+
+    assert not any(isinstance(e, TurnComplete) for e in events)
+
+
+@pytest.mark.asyncio
+async def test_gemini_legacy_mode_conserva_cierre_por_generation_complete():
+    """Modelos pre-3.8 (sin interaction_status estricto): generation_complete
+    solo (sin turn_complete) debe seguir cerrando el turno como antes."""
+    messages = [
+        MockGeminiMsg(server_content=MockServerContent38(generation_complete=True)),
+    ]
+    session = GeminiSession(MockNativeGeminiSession(messages), strict_turn_end=False)
+
+    events = [e async for e in session.receive()]
+
+    assert sum(isinstance(e, TurnComplete) for e in events) == 1

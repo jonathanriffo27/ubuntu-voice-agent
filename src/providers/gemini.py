@@ -158,4 +158,7 @@ class GeminiProvider(BaseProvider):
                 )
 
         async with self.client.aio.live.connect(model=self.model_name, config=config) as native_session:
-            yield GeminiSession(native_session, on_session_handle=self._save_session_handle)
+            # 3.8+: ciclo de turno estricto (turn_complete + interaction_status
+            # == IDLE); modelos anteriores usan el mapeo legacy.
+            yield GeminiSession(native_session, on_session_handle=self._save_session_handle,
+                                strict_turn_end=("gemini-3.8" in self.model_name))
