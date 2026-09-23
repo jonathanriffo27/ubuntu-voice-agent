@@ -62,7 +62,7 @@ REGLAS DE DISEÑO PRAGMÁTICO (APP-FIRST Y NATIVO EN LINUX):
 class DeveloperAgent:
     """
     Subagente de Razonamiento y Programación en Segundo Plano.
-    Se comunica con CLIProxyAPI en el servidor Oracle (usando gemini-3.7-flash-high)
+    Se comunica con CLIProxyAPI en el servidor Oracle (usando gemini-3.8-flash-high)
     para ejecutar tareas autónomas de código con compuerta de aprobación HITL.
 
     Con `worktree_manager` (Fase 3), cada tarea trabaja en un git worktree aislado:
@@ -76,7 +76,7 @@ class DeveloperAgent:
         client: CLIProxyClient,
         code_tools: AgentCodeTools,
         event_bus: Optional[EventBus] = None,
-        model: str = "gemini-3.7-flash-high",
+        model: str = "gemini-3.8-flash-high",
         max_iterations: int = 15,
         worktree_manager=None,
     ):

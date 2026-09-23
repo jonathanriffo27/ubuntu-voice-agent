@@ -46,7 +46,7 @@ def test_trajectory_event_bus_auto_recording():
         bus.publish(ResponseGenerated(ctx, text="Hola, ¿en qué te ayudo?"))
         bus.publish(ToolStarted(ctx, tool_name="buscar_en_internet", arguments={"query": "python"}))
         bus.publish(ToolSucceeded(ctx, tool_name="buscar_en_internet", result="Resultados ok"))
-        bus.publish(TaskDelegated(ctx, task_id="task123", instruction="Crear archivo", model="gemini-3.7-flash-high"))
+        bus.publish(TaskDelegated(ctx, task_id="task123", instruction="Crear archivo", model="gemini-3.8-flash-high"))
         bus.publish(TaskCompleted(ctx, task_id="task123", success=True, result="Archivo creado"))
 
         steps = tm.get_steps()

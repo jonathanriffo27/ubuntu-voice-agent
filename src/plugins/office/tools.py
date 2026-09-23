@@ -33,7 +33,7 @@ def _resolver_ruta_docx(nombre: str, directorio_destino: str) -> str:
 async def _generate_content_resilient(prompt: str) -> str:
     """
     Genera contenido de texto de forma resiliente con fallback automático entre proveedores y modelos.
-    1. Intenta primero vía CLIProxy (gemini-3.7-flash-high en el servidor Oracle), que tiene alta disponibilidad.
+    1. Intenta primero vía CLIProxy (gemini-3.8-flash-high en el servidor Oracle), que tiene alta disponibilidad.
     2. Si falla CLIProxy, intenta vía google.genai rotando modelos (gemini-2.5-flash, gemini-2.0-flash, gemini-3.7-flash)
        para eludir errores 503 UNAVAILABLE de Google AI Studio.
     """
@@ -43,7 +43,7 @@ async def _generate_content_resilient(prompt: str) -> str:
         cli_client = CLIProxyClient(timeout=120.0)
         resp = await cli_client.chat_completion(
             messages=[{"role": "user", "content": prompt}],
-            model="gemini-3.7-flash-high",
+            model="gemini-3.8-flash-high",
             temperature=0.3
         )
         choices = resp.get("choices", [])

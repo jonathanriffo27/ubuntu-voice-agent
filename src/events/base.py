@@ -134,7 +134,7 @@ class ReminderTriggered(Event):
 class TaskDelegated(Event):
     task_id: str
     instruction: str
-    model: str = "gemini-3.7-flash-high"
+    model: str = "gemini-3.8-flash-high"
 
 @dataclass
 class ApprovalRequested(Event):

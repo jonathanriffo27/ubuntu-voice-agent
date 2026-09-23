@@ -92,7 +92,7 @@ graph TD
   4. *Síntesis con Razonamiento*: Gemini 3.7 Flash redacta reporte estructurado y resumen para voz.
 
 ### 4. 🧠 Subagente de Desarrollo Auto-Evolutivo (Gemini 3.7 Flash)
-- **Modelo**: `gemini-3.7-flash-high` con **Thinking/Reasoning tokens**.
+- **Modelo**: `gemini-3.8-flash-high` con **Thinking/Reasoning tokens**.
 - **Conexión**: Consume `CLIProxyAPI` en `http://127.0.0.1:8317/v1` mediante túnel persistente `autossh` a Oracle Cloud.
 - **Capacidades**: Puede explorar el proyecto, escribir nuevos plugins en `src/plugins/`, correr la suite de `pytest` y recargar las herramientas en caliente sin reiniciar Atlas.
 

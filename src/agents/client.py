@@ -43,7 +43,7 @@ class CLIProxyClient:
     async def chat_completion(
         self,
         messages: List[Dict[str, Any]],
-        model: str = "gemini-3.7-flash-high",
+        model: str = "gemini-3.8-flash-high",
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: float = 0.2
     ) -> Dict[str, Any]:

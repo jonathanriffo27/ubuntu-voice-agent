@@ -77,7 +77,7 @@ class ComputerUseOrchestrator:
     """Ejecuta una tarea GUI multi-paso en segundo plano, narrando al final."""
 
     def __init__(self, client, gui_tool, event_bus: Optional[EventBus] = None,
-                 model: str = "gemini-3.7-flash-high",
+                 model: str = "gemini-3.8-flash-high",
                  max_steps: int = 12, max_no_progress: int = 2,
                  step_budget_s: float = 45.0):
         self.client = client

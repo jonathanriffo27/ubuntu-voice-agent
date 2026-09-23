@@ -16,7 +16,7 @@ logger = get_logger("plugins.gui_tasks")
 class OperarGuiTareaTool(BaseTool):
     """Lanza tareas GUI multi-paso en segundo plano (bucle OODA + LLM planificador)."""
 
-    def __init__(self, orchestrator=None, client=None, gui_tool=None, model: str = "gemini-3.7-flash-high"):
+    def __init__(self, orchestrator=None, client=None, gui_tool=None, model: str = "gemini-3.8-flash-high"):
         # Orquestación perezosa: se construye al primer uso para no tocar D-Bus
         # ni el escritorio en el arranque de Atlas.
         self._orchestrator = orchestrator

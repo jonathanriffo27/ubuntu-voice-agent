@@ -27,7 +27,7 @@ src/voice/recorder.py          → máquina de estados STANDBY / ACTIVE / FOLLOW
 src/voice/player.py            → reproducción con jitter buffer (0.5s)
 src/plugins/<nombre>/          → patrón: __init__.py con setup(registry, dependencies)
                                  + tools.py con clases BaseTool
-src/agents/                    → DeveloperAgent (CLIProxy :8317, gemini-3.7-flash-high),
+src/agents/                    → DeveloperAgent (CLIProxy :8317, gemini-3.8-flash-high),
                                  worktrees aislados + bubblewrap sandbox + HITL
 src/ui/web_overlay.py          → HUD en http://127.0.0.1:7890 (solo loopback)
 src/brain/prompts.py           → SYS_PROMPT_BASE + bloque IDENTIDAD (inyecta config)

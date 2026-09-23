@@ -32,7 +32,7 @@ developer_agent:
   provider: "cliproxy"
   base_url: "${CLIPROXY_BASE_URL:-http://127.0.0.1:8317/v1}"
   api_key: "${CLIPROXY_API_KEY}"  # Sin fallback hardcodeado: exporta CLIPROXY_API_KEY en tu entorno
-  model: "gemini-3.7-flash-high"
+  model: "gemini-3.8-flash-high"
   temperature: 0.2
   max_iterations: 15
 

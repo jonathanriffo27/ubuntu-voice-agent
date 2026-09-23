@@ -87,7 +87,7 @@ async def test_developer_agent_run_task():
     tools = AgentCodeTools(approval_manager=mgr)
     bus = EventBus()
 
-    agent = DeveloperAgent(client=client, code_tools=tools, event_bus=bus, model="gemini-3.7-flash-high")
+    agent = DeveloperAgent(client=client, code_tools=tools, event_bus=bus, model="gemini-3.8-flash-high")
 
     mock_response = {
         "choices": [{

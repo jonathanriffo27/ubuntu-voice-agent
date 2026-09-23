@@ -22,7 +22,7 @@ class DeepResearchEngine:
         search_engine,
         cli_client: Optional[CLIProxyClient] = None,
         reader: Optional[WebPageReader] = None,
-        model: str = "gemini-3.7-flash-high"
+        model: str = "gemini-3.8-flash-high"
     ):
         self.search_engine = search_engine
         self.cli_client = cli_client or CLIProxyClient()

@@ -58,7 +58,7 @@ class DeveloperAgentConfig:
     provider: str = "cliproxy"
     base_url: str = "http://127.0.0.1:8317/v1"
     api_key: str = ""  # Debe inyectarse vía variable de entorno CLIPROXY_API_KEY
-    model: str = "gemini-3.7-flash-high"
+    model: str = "gemini-3.8-flash-high"
     temperature: float = 0.2
     max_iterations: int = 15
 
