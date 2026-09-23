@@ -69,7 +69,11 @@ class AudioPlayer:
                 # durante un breve margen para evitar falsas transiciones entre chunks seguidos
                 if audio_queue_output.empty():
                     try:
-                        next_data = await asyncio.wait_for(audio_queue_output.get(), timeout=0.20)
+                        # 500ms: gemini-3.8-live hace pausas de varios segundos ENTRE
+                        # segmentos de una misma respuesta (jitter + pensamiento).
+                        # Con 200ms is_speaking oscilaba y la guardia anti-eco del
+                        # recorder (time_since_speech < 0.35/0.8) quedaba expuesta.
+                        next_data = await asyncio.wait_for(audio_queue_output.get(), timeout=0.50)
                         await asyncio.to_thread(self.out_stream.write, next_data, exception_on_underflow=False)
                         self._seg_bytes += len(next_data)
                         self.last_speech_time = time.time()

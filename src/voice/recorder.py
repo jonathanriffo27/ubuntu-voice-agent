@@ -51,6 +51,28 @@ class AudioRecorder:
         # usa para distinguir un barge-in genuino de un falso positivo del VAD
         # del servidor (gemini-3.8 lo dispara con ruido ambiente).
         self.last_local_voice_time: float = 0.0
+        # Turno del modelo en curso: lo marca el asistente al recibir el primer
+        # texto/audio/tool call tras la voz del usuario y lo limpia en
+        # TurnComplete/Interrupción. Con server_vad el flag waiting_for_model
+        # NUNCA se activa, así que sin esta marca el timeout de inactividad
+        # mandaba a STANDBY en medio de una respuesta si el modelo hacía una
+        # pausa larga entre segmentos de audio (bug: "¿En qué te puedo..." →
+        # 💤 [En Espera] → el resto llegaba tras repetir la wake word).
+        self.turn_in_flight: bool = False
+        # Marca temporal de la última entrada a STANDBY. Ventana de gracia para
+        # no evaluar la wake word mientras aún suena el chime "sleep": ese sonido
+        # sale por los altavoces (pw-play, fuera del tracking del player) y
+        # openWakeWord se auto-disparaba (~0.85 de confianza) al instante de dormir.
+        self._standby_entered: float = 0.0
+        # Cierre de conversación iniciado por el usuario ("no, por ahora no,
+        # gracias"): el modelo llama a la tool 'entrar_en_espera' y el salto a
+        # STANDBY se aplica al TurnComplete del turno de despedida (así la frase
+        # termina de reproducirse). Sin ventana follow-up de N segundos.
+        self.pending_sleep: bool = False
+        # Timestamp del sueño deliberado: Gemini Live emite DOS TurnComplete por
+        # turno (generation_complete + turn_complete, ver gemini_session.py), y el
+        # duplicado no debe re-despertar a FOLLOW_UP justo después de dormir.
+        self._deliberate_sleep_at: float = 0.0
 
         # Estado inicial según configuración
         mode = getattr(voice_config, 'mode', 'always_on') if voice_config else 'always_on'
@@ -82,13 +104,35 @@ class AudioRecorder:
         ww = wake_word or (getattr(self._voice_config, 'wake_word', 'hey_jarvis') if self._voice_config else 'hey_jarvis')
         await asyncio.to_thread(self.wake_detector.load_sync, ww)
 
+    def request_sleep_after_turn(self):
+        """El modelo aceptó cerrar la conversación (tool 'entrar_en_espera').
+        El salto a STANDBY se aplica en el próximo enter_follow_up (TurnComplete),
+        de modo que la despedida hablada termine de reproducirse antes de dormir."""
+        self.pending_sleep = True
+
     def enter_follow_up(self):
         """Inicia la ventana de follow-up post-respuesta de Gemini."""
         self.waiting_for_model = False
         mode = getattr(self._voice_config, 'mode', 'always_on') if self._voice_config else 'always_on'
-        if mode == 'wake_word' and self._state != RecorderState.MUTED:
-            self._state = RecorderState.FOLLOW_UP
-            self._follow_up_last_active = time.time()
+        if mode != 'wake_word' or self._state == RecorderState.MUTED:
+            return
+        if self.pending_sleep:
+            # El usuario cerró la conversación: dormir de inmediato, sin follow-up.
+            self.pending_sleep = False
+            self._state = RecorderState.STANDBY
+            now = time.time()
+            self._standby_entered = now
+            self._deliberate_sleep_at = now
+            self.wake_detector.reset()
+            play_sound("sleep")
+            self.event_bus.publish(WakeWordStandby(self.conversation_context))
+            return
+        # El TurnComplete duplicado (generation_complete + turn_complete) no debe
+        # reabrir la ventana justo después de un sueño deliberado.
+        if self._state == RecorderState.STANDBY and (time.time() - self._deliberate_sleep_at) < 5.0:
+            return
+        self._state = RecorderState.FOLLOW_UP
+        self._follow_up_last_active = time.time()
 
     async def calibrate(self, max_drain_frames: int = 25, sample_frames: int = 15) -> int:
         """
@@ -165,6 +209,13 @@ class AudioRecorder:
 
                 # 2. Estado STANDBY: solo detección local de wake word (0 tráfico a Gemini)
                 if self._state == RecorderState.STANDBY:
+                    # Ventana de gracia post-sueño: el chime "sleep" sale por los
+                    # altavoces vía pw-play (el player no lo rastrea) y su eco
+                    # entraba directo al detector, auto-despertando a Atlas ~1s
+                    # después de dormir (falso positivo de 0.85 observado).
+                    if time.time() - self._standby_entered < 1.2:
+                        await asyncio.sleep(0.001)
+                        continue
                     # Guardia anti-eco: la voz de Atlas sale por los altavoces y entra
                     # al micrófono; sin este filtro openWakeWord se auto-dispara con la
                     # propia voz (falsos positivos 0.95+ tras cada respuesta hablada).
@@ -193,10 +244,17 @@ class AudioRecorder:
                 # OJO: nunca dormir mientras hay una herramienta ejecutándose; con
                 # server_vad el flag waiting_for_model no se usa, y búsquedas largas
                 # (15-45s) mandaban el sistema a STANDBY a mitad de la tool.
+                # turn_in_flight: con server_vad el modelo puede pausar varios
+                # segundos ENTRE segmentos de audio de una misma respuesta; dormir
+                # ahí partía la frase a mitad y el resto llegaba en el siguiente
+                # ciclo de wake word.
                 if (self._state == RecorderState.ACTIVE and not user_spoke
-                        and not self.waiting_for_model and not self.processing_tool):
+                        and not self.waiting_for_model and not self.processing_tool
+                        and not self.turn_in_flight):
                     if (time.time() - getattr(self, '_active_started', 0.0)) > follow_up_timeout:
                         self._state = RecorderState.STANDBY
+                        self._standby_entered = time.time()
+                        self.wake_detector.reset()
                         play_sound("sleep")
                         self.event_bus.publish(WakeWordStandby(self.conversation_context))
                         silence_frames = 0
@@ -209,8 +267,11 @@ class AudioRecorder:
                 #   una herramienta y la wake word se evaluaba durante ella)
                 if self._state == RecorderState.FOLLOW_UP:
                     elapsed = time.time() - self._follow_up_last_active
-                    if elapsed > follow_up_timeout and not self.processing_tool:
+                    if (elapsed > follow_up_timeout and not self.processing_tool
+                            and not self.turn_in_flight):
                         self._state = RecorderState.STANDBY
+                        self._standby_entered = time.time()
+                        self.wake_detector.reset()
                         play_sound("sleep")
                         self.event_bus.publish(WakeWordStandby(self.conversation_context))
                         silence_frames = 0

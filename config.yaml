@@ -6,7 +6,7 @@ provider:
 voice:
   mode: wake_word            # "wake_word" (estilo Ok Google) o "always_on"
   wake_word: alexa           # "alexa", "hey_jarvis", "hey_mycroft" o ruta a .onnx
-  wake_word_threshold: 0.55  # Subido de 0.28: falsos positivos de TV/audio ambiental disparaban a ~0.50; reales observados: 0.62-0.99
+  wake_word_threshold: 0.62  # Reales observados: 0.94-0.99 | Falsos: ~0.55 (ruido) y 0.85 (chime "sleep"). La gracia post-sueño en recorder.py cubre los residuales por encima del umbral
   follow_up_timeout: 7.0     # Ventana para repreguntar sin repetir wake word
   activation_sound: true     # Reproduce ding al despertar
   language: es-CL

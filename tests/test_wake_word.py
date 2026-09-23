@@ -152,6 +152,59 @@ class TestRecorderStateMachine:
         rec.enter_follow_up()
         assert rec.state == RecorderState.MUTED
 
+    def test_pending_sleep_va_directo_a_standby(self):
+        """Feature: tool 'entrar_en_espera' — tras un 'no, por ahora no, gracias'
+        el turno de despedida cierra directo en STANDBY, sin abrir la ventana
+        follow-up de 7s con el micrófono escuchando al ambiente."""
+        event_bus = EventBus()
+        events = []
+        event_bus.subscribe_all(lambda e: events.append(e))
+        rec = AudioRecorder(MagicMock(), event_bus, ConversationContext(),
+                            voice_config=self._wake_word_voice_config())
+        rec._state = RecorderState.ACTIVE
+
+        rec.request_sleep_after_turn()
+        rec.enter_follow_up()
+
+        assert rec.state == RecorderState.STANDBY
+        assert rec.pending_sleep is False  # consumido
+        assert any(isinstance(e, WakeWordStandby) for e in events)
+
+    def test_turncomplete_duplicado_no_redespierta_tras_sleep_deliberado(self):
+        """Gemini Live emite DOS TurnComplete por turno (generation_complete +
+        turn_complete en gemini_session.py): el segundo no debe reabrir la
+        ventana FOLLOW_UP justo después de un sueño deliberado."""
+        event_bus = EventBus()
+        rec = AudioRecorder(MagicMock(), event_bus, ConversationContext(),
+                            voice_config=self._wake_word_voice_config())
+        rec._state = RecorderState.ACTIVE
+
+        rec.request_sleep_after_turn()
+        rec.enter_follow_up()   # primer TurnComplete: duerme
+        rec.enter_follow_up()   # TurnComplete duplicado: NO debe re-despertar
+
+        assert rec.state == RecorderState.STANDBY
+
+    def test_follow_up_desde_standby_sin_sleep_deliberado_sigue_abierto(self):
+        """Control: un TurnComplete llegando a STANDBY sin cierre deliberado
+        (ej: turno iniciado por teclado/HUD) sí abre la ventana follow-up."""
+        event_bus = EventBus()
+        rec = AudioRecorder(MagicMock(), event_bus, ConversationContext(),
+                            voice_config=self._wake_word_voice_config())
+        rec._state = RecorderState.STANDBY
+        rec.waiting_for_model = True
+
+        rec.enter_follow_up()
+
+        assert rec.state == RecorderState.FOLLOW_UP
+        assert rec.waiting_for_model is False
+
+    @staticmethod
+    def _wake_word_voice_config():
+        vc = MagicMock()
+        vc.mode = "wake_word"
+        return vc
+
 
 @pytest.mark.asyncio
 class TestRecorderListenLoop:
@@ -185,7 +238,12 @@ class TestRecorderListenLoop:
         q_out = asyncio.Queue()
 
         task = asyncio.create_task(recorder.listen(q_in, q_out))
-        await asyncio.sleep(0.05)
+        # Bombear hasta la detección (máx. 2s) en vez de un sleep fijo de 50ms:
+        # bajo carga de la suite completa el event loop puede tardar más en
+        # programar la tarea y el test fallaba en flake.
+        deadline = time.monotonic() + 2.0
+        while recorder.state != RecorderState.ACTIVE and time.monotonic() < deadline:
+            await asyncio.sleep(0.005)
         task.cancel()
         try:
             await task
@@ -332,14 +390,27 @@ class TestRecorderListenLoop:
         voice_config.server_vad = True
         return AudioRecorder(mock_stream, event_bus, ConversationContext(), voice_config=voice_config)
 
-    async def _pump_listen(self, recorder, player=None, seconds=0.05):
+    async def _pump_listen(self, recorder, player=None, seconds=0.05, until=None):
+        """Corre el bucle listen en background.
+        - Sin `until`: ventana fija de `seconds` (para tests que esperan que el
+          estado NO cambie).
+        - Con `until`: bombea hasta que el predicado se cumpla o se agote
+          `seconds` (máx.). Evita flakes bajo carga de la suite completa, donde
+          50ms de wall-clock no garantizan ni una iteración del bucle."""
         task = asyncio.create_task(recorder.listen(asyncio.Queue(), asyncio.Queue(), player))
-        await asyncio.sleep(seconds)
-        task.cancel()
         try:
-            await task
-        except asyncio.CancelledError:
-            pass
+            if until is None:
+                await asyncio.sleep(seconds)
+            else:
+                deadline = time.monotonic() + seconds
+                while not until() and time.monotonic() < deadline:
+                    await asyncio.sleep(0.005)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     async def test_processing_tool_prevents_standby_timeout(self):
         """Bug real: con server_vad una búsqueda de 15s dormía el sistema a mitad
@@ -406,8 +477,84 @@ class TestRecorderListenLoop:
         recorder.wake_detector.predict.return_value = (True, "alexa", 0.9)
 
         quiet_player = SimpleNamespace(is_speaking=False, last_speech_time=0.0)
-        await self._pump_listen(recorder, player=quiet_player)
+        await self._pump_listen(
+            recorder, player=quiet_player, seconds=2.0,
+            until=lambda: recorder.state == RecorderState.ACTIVE,
+        )
 
         assert recorder.state == RecorderState.ACTIVE
         assert any(isinstance(e, WakeWordDetected) for e in events)
+
+    async def test_turn_in_flight_prevents_standby_en_pausa_de_respuesta(self):
+        """Bug real: con server_vad, gemini-3.8 hace pausas de varios segundos
+        ENTRE segmentos de una misma respuesta; sin turn_in_flight el timeout de
+        ACTIVE dormía a Atlas a mitad de frase ("¿En qué te puedo..." → 💤 →
+        "...asistir?" llegaba tras repetir la wake word)."""
+        event_bus = EventBus()
+        events = []
+        event_bus.subscribe_all(lambda e: events.append(e))
+
+        recorder = self._make_listen_recorder(event_bus)
+        recorder._state = RecorderState.ACTIVE
+        recorder.turn_in_flight = True
+        recorder._active_started = time.time() - 60.0  # "inactividad" expirada
+
+        await self._pump_listen(recorder)
+
+        assert recorder.state == RecorderState.ACTIVE  # sigue despierto a mitad de turno
+        assert not any(isinstance(e, WakeWordStandby) for e in events)
+
+    async def test_turn_in_flight_prevents_follow_up_expiry(self):
+        """Un TurnComplete no debe cortar el seguimiento si el modelo sigue
+        emitiendo eventos del mismo turno (variante FOLLOW_UP del bug anterior)."""
+        event_bus = EventBus()
+        events = []
+        event_bus.subscribe_all(lambda e: events.append(e))
+
+        recorder = self._make_listen_recorder(event_bus)
+        recorder._state = RecorderState.FOLLOW_UP
+        recorder.turn_in_flight = True
+        recorder._follow_up_last_active = time.time() - 60.0  # ventana expirada
+
+        await self._pump_listen(recorder)
+
+        assert recorder.state == RecorderState.FOLLOW_UP
+        assert not any(isinstance(e, WakeWordStandby) for e in events)
+
+    async def test_standby_grace_period_suprime_eco_del_chime_sleep(self):
+        """Bug real: el chime "sleep" (pw-play por altavoces, fuera del tracking
+        del player) auto-disparaba la wake word ~1s después de dormir (0.85)."""
+        event_bus = EventBus()
+        events = []
+        event_bus.subscribe_all(lambda e: events.append(e))
+
+        recorder = self._make_listen_recorder(event_bus)
+        recorder._state = RecorderState.STANDBY
+        recorder._standby_entered = time.time()  # recién dormido (gracia activa)
+        recorder.wake_detector = MagicMock()
+        recorder.wake_detector.predict.return_value = (True, "alexa", 0.85)
+
+        quiet_player = SimpleNamespace(is_speaking=False, last_speech_time=0.0)
+        await self._pump_listen(recorder, player=quiet_player)
+
+        assert recorder.state == RecorderState.STANDBY
+        recorder.wake_detector.predict.assert_not_called()  # ni siquiera evalúa el chime
+        assert not any(isinstance(e, WakeWordDetected) for e in events)
+
+    async def test_follow_up_expira_normalmente_tras_turno_cerrado(self):
+        """Control: con turn_in_flight limpio (modelo ya terminó), la ventana
+        FOLLOW_UP sí debe expirar con normalidad."""
+        event_bus = EventBus()
+        events = []
+        event_bus.subscribe_all(lambda e: events.append(e))
+
+        recorder = self._make_listen_recorder(event_bus)
+        recorder._state = RecorderState.FOLLOW_UP
+        recorder.turn_in_flight = False
+        recorder._follow_up_last_active = time.time() - 60.0
+
+        await self._pump_listen(recorder)
+
+        assert recorder.state == RecorderState.STANDBY
+        assert any(isinstance(e, WakeWordStandby) for e in events)
 

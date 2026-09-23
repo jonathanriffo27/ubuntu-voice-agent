@@ -14,7 +14,8 @@ from src.voice.recorder import AudioRecorder
 from src.voice.player import AudioPlayer, play_sound
 from src.providers.base import (
     BaseProvider, ProviderSession, AudioChunk, TextChunk, UserTextChunk,
-    ToolCallRequest, Interrupted, TurnComplete, ToolResponseItem
+    ToolCallRequest, Interrupted, TurnComplete, ToolResponseItem,
+    ToolCallsCancelled
 )
 from src.brain.prompts import build_system_prompt
 from src.tools.registry import ToolRegistry
@@ -181,11 +182,34 @@ class Assistant:
                             self.player.stop_and_clear(audio_queue_output)
                         if self.recorder:
                             self.recorder.waiting_for_model = False
+                            # Barge-in genuino: anula tanto el turno en curso como un
+                            # cierre pendiente (el usuario cambió de idea a mitad de
+                            # la despedida).
+                            self.recorder.turn_in_flight = False
+                            self.recorder.pending_sleep = False
                         self.event_bus.publish(UserInterrupted(self.conversation_context))
                         printed_prefix = False
 
+                    elif isinstance(event, ToolCallsCancelled):
+                        # Live API (docs oficiales): en un barge-in el servidor cancela
+                        # los tool calls en vuelo (LiveServerToolCallCancellation) y su
+                        # respuesta queda invalidada — NO hay que enviarla. Liberamos el
+                        # gate del micrófono: la rama ToolCallRequest lo activa, pero si
+                        # la cancelación llega después, nadie lo limpiaba y el sistema
+                        # podía quedarse mudo esperando un cierre que nunca llega.
+                        logger.info(f"Tool calls canceladas por el servidor (barge-in): {event.ids}")
+                        if self.recorder:
+                            self.recorder.processing_tool = False
+                            self.recorder.turn_in_flight = False
+                            self.recorder.pending_sleep = False
+
                     elif isinstance(event, AudioChunk):
                         audio_queue_output.put_nowait(event.data)
+                        # Marca de turno vivo: impide que la máquina de estados de
+                        # voz caiga a STANDBY en las pausas entre segmentos de audio
+                        # (con server_vad no hay otro indicador de "respondiendo").
+                        if self.recorder:
+                            self.recorder.turn_in_flight = True
                         audio_chunks_turn += 1
                         audio_bytes_turn += len(event.data)
                         audio_chunks_session += 1
@@ -204,6 +228,8 @@ class Assistant:
                     elif isinstance(event, TextChunk):
                         if not printed_prefix:
                             printed_prefix = True
+                        if self.recorder:
+                            self.recorder.turn_in_flight = True
                         current_response_text.append(event.text)
                         self.event_bus.publish(AssistantTextChunk(self.conversation_context, text=event.text))
 
@@ -225,12 +251,14 @@ class Assistant:
                         self._duplicate_guard.clear()
                         if self.recorder:
                             self.recorder.waiting_for_model = False
+                            self.recorder.turn_in_flight = False
                         printed_prefix = False
 
 
                     elif isinstance(event, ToolCallRequest):
                         if self.recorder:
                             self.recorder.processing_tool = True
+                            self.recorder.turn_in_flight = True
                         responses: List[ToolResponseItem] = []
 
                         for fc in event.calls:
@@ -339,6 +367,12 @@ class Assistant:
                                             ToolSucceeded(self.conversation_context, tool_name=fc.name, result=res_dict)
                                         )
 
+                                    # Cierre de conversación aceptado por el modelo
+                                    # ('entrar_en_espera'): dormir al TurnComplete del
+                                    # turno de despedida, sin ventana follow-up.
+                                    if fc.name == "entrar_en_espera" and self.recorder:
+                                        self.recorder.request_sleep_after_turn()
+
                                     responses.append(ToolResponseItem(name=fc.name, id=fc.id, response=res_dict))
                                 except Exception as e:
                                     self.event_bus.publish(
@@ -402,6 +436,8 @@ class Assistant:
                 self.player.stop_and_clear(self._audio_out_queue)
             if self.recorder:
                 self.recorder.waiting_for_model = True
+                # Nuevo mensaje por texto = el usuario sigue aquí: anula un cierre pendiente.
+                self.recorder.pending_sleep = False
             await self._active_session.send_text(text, end_of_turn=True)
 
     def toggle_microphone_pause(self) -> None:
@@ -553,7 +589,7 @@ class Assistant:
                 else:
                     logger.debug(f"Reconectando al proveedor (intento {attempt}/{self.max_reconnect_attempts})...")
 
-                sys_prompt, _ = build_system_prompt(self.knowledge_manager, trajectory_manager=self.trajectory_manager)
+                sys_prompt, _ = build_system_prompt(self.knowledge_manager, trajectory_manager=self.trajectory_manager, config=self.config)
 
                 try:
                     async with self.provider.connect(
@@ -583,6 +619,8 @@ class Assistant:
                         if self.recorder:
                             self.recorder.waiting_for_model = False
                             self.recorder.processing_tool = False
+                            self.recorder.turn_in_flight = False
+                            self.recorder.pending_sleep = False
                         if self.player:
                             self.player.is_speaking = False
 
