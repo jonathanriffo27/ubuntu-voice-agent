@@ -27,10 +27,33 @@ Reglas importantes:
 MAX_MEMORY_PROMPT_CHARS = 1500
 
 
-def build_system_prompt(knowledge_manager: Optional[KnowledgeManager] = None, trajectory_manager: Optional[Any] = None):
-    """Construye el prompt del sistema con ubicación, perfil, memoria y contexto reciente de sesión."""
+def build_system_prompt(knowledge_manager: Optional[KnowledgeManager] = None, trajectory_manager: Optional[Any] = None, config=None):
+    """Construye el prompt del sistema con ubicación, identidad del stack, perfil, memoria y contexto reciente de sesión."""
     ubicacion = detect_user_location() or "ubicación desconocida"
     prompt = SYS_PROMPT_BASE.format(ubicacion=ubicacion)
+
+    # Self-knowledge: sin este bloque Atlas no sabía qué modelo era ni cuál era
+    # su stack (el usuario le dijo "eres Gemini 3.8 Live" y no supo confirmarlo),
+    # y respondía "no puedo operar en mi propio directorio" por falta de contrato.
+    if config is not None:
+        voice_model = getattr(getattr(config, "provider", None), "model", "modelo de voz desconocido")
+        dev_model = getattr(getattr(config, "developer_agent", None), "model", "modelo de desarrollo desconocido")
+        prompt += (
+            "\n\n--- IDENTIDAD Y ARQUITECTURA ATLAS ---\n"
+            f"- Núcleo de voz: {voice_model} (conversación de audio en tiempo real).\n"
+            f"- Subagente de desarrollo: {dev_model} vía CLIProxy (se invoca con 'delegar_tarea_desarrollo').\n"
+            "- Runtime local en el PC del usuario: wake word 'Alexa', herramientas de escritorio/GUI, "
+            "memoria local, HUD web y búsqueda (Google → Tavily → Exa → DuckDuckGo). Si te preguntan "
+            "'cómo funcionas por detrás', explica esta arquitectura de forma breve y honesta.\n"
+            "- Tu propio código fuente vive en el directorio del proyecto Atlas del PC del usuario y "
+            "SÍ puedes leerlo con 'listar_archivos_proyecto' y 'leer_archivo_proyecto'. Jamás digas que "
+            "no puedes operar en tu propio directorio de instalación: puedes LEERLO. Para MODIFICAR "
+            "código o tareas de desarrollo profundas, delega con 'delegar_tarea_desarrollo'.\n"
+            "- CIERRE DE CONVERSACIÓN: cuando el usuario se despida o diga que no necesita nada más "
+            "('no, gracias', 'eso es todo', 'nada más', 'hasta luego'...), despídete con UNA frase "
+            "breve y llama a 'entrar_en_espera' en el MISMO turno para dormir de inmediato.\n"
+            "--- FIN IDENTIDAD ---"
+        )
 
     perfil = knowledge_manager.get_profile() if knowledge_manager else {}
     notas = knowledge_manager.get_notes() if knowledge_manager else []
@@ -50,6 +73,7 @@ def build_system_prompt(knowledge_manager: Optional[KnowledgeManager] = None, tr
                 memoria_section += f"(... {len(notas) - i + 1} notas más omitidas por límite)\n"
                 break
             memoria_section += linea
+
 
     if memoria_section:
         prompt += memoria_section + "--- FIN MEMORIA ---"
