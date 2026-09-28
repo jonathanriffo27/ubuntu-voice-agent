@@ -80,3 +80,31 @@ def test_cli_interface_session_reconnected(capsys):
     assert "Conexión con Gemini restablecida" in captured
     # Verificar que NO imprime el banner gigante de inicio
     assert "ATLAS AI RUNTIME" not in captured
+
+
+def test_cli_banner_muestra_modelo_y_respaldo(capsys):
+    bus = EventBus()
+    CLIInterface(bus, voice_model="gemini-3.8-live", fallback_model="gemini-3.1-flash-live-preview")
+    bus.publish(SessionStarted(ConversationContext()))
+
+    out = capsys.readouterr().out
+    assert "gemini-3.8-live" in out
+    assert "respaldo: gemini-3.1-flash-live-preview" in out
+    assert "Live Preview" not in out
+
+
+def test_cli_notificaciones_de_modelo_y_sistema(capsys):
+    from src.events.base import SystemNotification
+    bus = EventBus()
+    CLIInterface(bus)
+    ctx = ConversationContext()
+
+    bus.publish(SystemNotification(ctx, message="usando modelo de respaldo", kind="model"))
+    out = capsys.readouterr().out
+    assert "[Modelo]" in out
+    assert "usando modelo de respaldo" in out
+
+    bus.publish(SystemNotification(ctx, message="Documento listo"))
+    out2 = capsys.readouterr().out
+    assert "[Sistema]" in out2
+    assert "Documento listo" in out2

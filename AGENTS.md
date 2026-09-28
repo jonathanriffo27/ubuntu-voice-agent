@@ -8,7 +8,7 @@ están en **español**.
 ## Comandos
 
 - Correr: `venv/bin/python jarvis.py` (requiere `GEMINI_API_KEY` en `.env`)
-- Tests: `venv/bin/python -m pytest tests/ -q` (suite completa, ~524 tests)
+- Tests: `venv/bin/python -m pytest tests/ -q` (suite completa, ~540 tests)
 - Un archivo: `venv/bin/python -m pytest tests/test_wake_word.py -q`
 - El venv es `venv/` (Python 3.14). No hay `pip install` global: siempre `venv/bin/pip`.
 
@@ -16,20 +16,28 @@ están en **español**.
 
 ```
 jarvis.py  → bootstrap: config.yaml, plugins, HUD, subagente, provider
+             + provider_factory para el fallback en caliente de modelo
 src/providers/gemini.py        → LiveConnectConfig (resumption, compresión, VAD)
 src/providers/gemini_session.py → normaliza eventos Live API (AudioChunk, TextChunk,
                                  UserTextChunk, ToolCallRequest, Interrupted,
-                                 TurnComplete, GoAway, ToolCallsCancelled)
+                                 TurnComplete, GoAway, ToolCallsCancelled, close)
 src/brain/assistant.py         → receive_and_route: enruta eventos, ejecuta tools,
-                                 maneja barge-in y flags de voz en el recorder
+                                 maneja barge-in, flags de voz y fallback de
+                                 proveedor (1011/503 → fallback_model en runtime,
+                                 sonda y retorno automático al primario)
 src/voice/recorder.py          → máquina de estados STANDBY / ACTIVE / FOLLOW_UP /
-                                 MUTED; wake word local + VAD RMS; pre-roll
+                                 MUTED; wake word local + VAD RMS; pre-roll. La
+                                 pausa libera el stream de captura (close/reopen),
+                                 NO mutea la fuente del sistema
 src/voice/player.py            → reproducción con jitter buffer (0.5s)
 src/plugins/<nombre>/          → patrón: __init__.py con setup(registry, dependencies)
                                  + tools.py con clases BaseTool
 src/agents/                    → DeveloperAgent (CLIProxy :8317, gemini-3.8-flash-high),
                                  worktrees aislados + bubblewrap sandbox + HITL
-src/ui/web_overlay.py          → HUD en http://127.0.0.1:7890 (solo loopback)
+src/ui/web_overlay.py          → HUD en http://127.0.0.1:7890 (solo loopback).
+                                 /api/status expone el modelo de voz activo
+src/ui/cli.py                  → banner con modelo primario/respaldo y render
+                                 de SystemNotification (kind="model")
 src/brain/prompts.py           → SYS_PROMPT_BASE + bloque IDENTIDAD (inyecta config)
 ```
 
@@ -72,6 +80,20 @@ provider/voz, repásalas antes de "simplificar":
 10. **Seguridad**: `.env` y `latest_session.log` están en `.gitignore` — nunca
     commitearlos. El CredentialBroker redacta secretos de todo output de tools;
     `leer_archivo_proyecto` deniega `.env`/claves/binarios (defensa en profundidad).
+11. **Fallback de proveedor**: si `gemini-3.8-live` devuelve `1011`/`503` en
+    sesiones cortas (<15s), el Assistant cambia a `provider.fallback_model`
+    **solo en runtime** — jamás sobreescribir `config.yaml` (el primario debe
+    volver solo). Sondea cada `fallback_probe_interval` con una sesión
+    desechable y, si el primario responde, cierra la sesión de fallback si está
+    idle (`GeminiSession.close()`). Un 1011 tras sesión larga es el idle-timeout
+    normal del servidor y NO debe gatillar el fallback.
+12. **Pausa del micrófono = liberar captura, no mutear el sistema**: la pausa
+    (Tab / `/mute` / HUD) cierra el stream PyAudio (el `source-output` de
+    PulseAudio desaparece al instante y GNOME apaga el indicador; reabrir tarda
+    ~6ms). `stop_stream()` NO libera el source-output (medido: seguía vivo 2s
+    después) y mutear la fuente del sistema afecta a todas las apps y deja
+    estado pegajoso si Atlas muere. El cierre debe esperar a un `read()` en
+    vuelo (lock `_stream_lock`): cerrar en paralelo hace segfault a PortAudio.
 
 ## Convenciones
 

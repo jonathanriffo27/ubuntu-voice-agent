@@ -2,6 +2,13 @@ provider:
   type: gemini
   model: gemini-3.8-live
   voice: Aoede
+  # Fallback temporal si gemini-3.8-live queda no disponible (1011/503 del
+  # backend de Live, p. ej. saturación). Solo de runtime: `model` NO se
+  # modifica, así al recuperarse el primario (o al reiniciar Atlas) se vuelve
+  # a 3.8 automáticamente. Vacío = sin fallback.
+  fallback_model: gemini-3.1-flash-live-preview
+  fallback_after_failures: 2       # fallos "no disponible" seguidos para activarlo
+  fallback_probe_interval: 300     # cada cuántos segundos sondea si 3.8 volvió
 
 voice:
   mode: wake_word            # "wake_word" (estilo Ok Google) o "always_on"

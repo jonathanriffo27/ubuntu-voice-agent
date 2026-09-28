@@ -1,5 +1,41 @@
 # Notas de Desarrollo y Troubleshooting de Atlas
 
+## 30. Pausa del Micrófono sin Mute del Sistema y Fallback en Caliente por Saturación del Backend Live (2026-09-28)
+
+### 30.1 Pausa del micrófono: liberar captura en vez de mutear la fuente del sistema
+- **Problema Detectado:**
+  - Al pausar Atlas (`Tab` / `/mute` / HUD) el estado interno pasaba a `MUTED`, pero el icono de micrófono de GNOME seguía encendido: la fuente de PulseAudio continuaba activa y el stream de PyAudio seguía leyendo.
+  - Primer intento (descartado): sincronizar la pausa con `pactl set-source-mute @DEFAULT_SOURCE@ 1`. El icono sí reflejaba el mute, pero afectaba a **todas** las apps del sistema y, si Atlas moría sin cleanup (SIGKILL, cierre de terminal), el micrófono quedaba muteado de forma pegajosa. Se agregó incluso un marcador en `/tmp` con el PID dueño para restaurarlo al arrancar; el enfoque completo se eliminó al adoptar la solución definitiva.
+- **Causa Raíz y mediciones:**
+  1. `stop_stream()` de PyAudio **no libera** el `source-output` de PulseAudio (medido: seguía apareciendo 2s después; el indicador de privacidad de GNOME no se apaga). `close()` lo elimina al instante.
+  2. Un stream cerrado no se puede reabrir: hay que crear uno nuevo con `PyAudio.open(...)`. Medido: ~6ms.
+  3. `asyncio.to_thread(read)` **no se puede cancelar**: al cancelar la task, el hilo sigue bloqueado en `read()`. Cerrar el stream en cleanup en paralelo al read produce **segfault de PortAudio** (reproducido en prueba real).
+- **Solución Implementada:**
+  1. `AudioRecorder` recibe `in_stream_factory` (inyectada por `Assistant._open_input_stream`). En `MUTED` el bucle `listen` llama a `_release_capture()` → `close()` del stream; al reanudar, `_acquire_capture()` abre uno nuevo. Sin fábrica (tests/embebidos) degrada a `stop_stream`/`start_stream`.
+  2. `threading.Lock` (`_stream_lock`) serializa `_read_chunk()` con `_release_capture()`, `_acquire_capture()` y `close_capture()`: el cierre espera a que termine el read en vuelo (timeout 1s; si no, se omite y `p.terminate()` libera).
+  3. El setter `is_paused` solo cambia el estado (sin I/O de stream): el cierre ocurre dentro del bucle que lee, evitando carreras entre hilos.
+  4. `cleanup_async` delega el cierre de captura en `recorder.close_capture()` (el recorder puede haber reemplazado el stream).
+  5. Se agregaron handlers SIGTERM/SIGHUP en `run_async` (`loop.add_signal_handler(sig, main_task.cancel)`) para que cerrar la terminal ejecute `cleanup_async` (verificado: el `finally` corre y `CancelledError` se propaga manejada en `run()`).
+- **Verificación:** prueba real con PyAudio + PulseAudio: `source-outputs` 1 → 0 al pausar → 1 al reanudar → 0 en cleanup, con `Mute: no` intacto. Suite completa en verde.
+
+### 30.2 Fallback en caliente: `1011 Internal error encountered` masivo (backend Live saturado)
+- **Problema Detectado:**
+  - `gemini-3.8-live` empezó a cerrar cada sesión con `APIError: 1011 None. Internal error encountered.` ~1-2s después de conectar o al enviar el primer mensaje. Atlas reconectaba en silencio y los mensajes del usuario se perdían sin respuesta (`🔄 [Reconectado]` en bucle).
+  - Diagnóstico aislado (sin la app): sesión Live mínima con la misma clave → mismo 1011; REST `generateContent` con `gemini-3.8-flash` → `503 This model is currently experiencing high demand`. La clave era válida (61 modelos listados) y `gemini-3.1-flash-live-preview` respondía correctamente con las 32 tools reales (tool call + tool response + audio + TurnComplete).
+- **Causa Raíz:** saturación temporal del backend de Live para la familia 3.8 (no era código, ni cuota agotada, ni la clave).
+- **Solución Implementada (solo runtime, config intacta):**
+  1. `ProviderConfig`: `fallback_model` (vacío = sin fallback), `fallback_after_failures` (default 2), `fallback_probe_interval` (default 300s). `config.yaml` mantiene `model: gemini-3.8-live` como primario.
+  2. `jarvis.py` pasa `provider_factory(model)` al `Assistant`; el asistente mantiene `_primary_provider` / `_active_provider` y el bucle de sesión usa el activo (incluido `reset_session_handle`).
+  3. `_track_provider_health()` cuenta **fallos cortos** (<15s) con señales de backend no disponible (`1011`/`503`/`high demand`/`internal error`, incluidos los `ExceptionGroup` de la TaskGroup). Racha ≥ umbral → `_activate_fallback()` (aviso `SystemNotification` y `_active_session = None` para no enviar a un websocket muriendo).
+  4. `_probe_primary_loop()` sondea al primario con una sesión desechable ("ping", ≤8s). Si responde, `_return_to_primary()` cambia el proveedor activo, notifica y —si está idle— fuerza la reconexión con `GeminiSession.close()` (nuevo método) marcando `_provider_switch_requested` para que no cuente como fallo. Si está ocupado, espera hasta 5 min a que quede idle.
+  5. Un `1011` tras sesión **larga** (>15s) sigue tratándose como idle-timeout normal y no gatilla el fallback.
+- **Verificación:** `tests/test_provider_fallback.py` (10 tests: activación, umbral, sesión larga, ExceptionGroup, fallback no se re-activa, sonda OK/fallida, refresco volitivo, integración con `run_async`). Prueba real con primario caído: 2 fallos → fallback `gemini-3.1-flash-live-preview` activo → mensaje de texto respondido (`AssistantTextChunk: ok`). El retorno automático quedó cubierto por tests unitarios (el primario seguía caído al momento de la prueba).
+
+### 30.3 Por qué `prompt_token_count` de Live 3.8 parece "resetearse" (26k → 9.7k)
+- **Síntoma:** en una sesión real, el log mostraba prompt=26204 en un turno, 9729 en el siguiente y 20953 en el siguiente, sin reconexiones registradas. Parecía pérdida silenciosa de contexto.
+- **Investigación:** sonda headless con las 32 tools reales y un dato de memoria ("el código secreto es TITAN-42"): el patrón se reprodujo exacto (13940 → 7089 → 14917 → 15167) y el modelo **recordó TITAN-42** en el cuarto turno. `cached_content_token_count` fue 0 en todas las mediciones.
+- **Conclusión:** el `prompt_token_count` de Live 3.8 no es acumulativo del historial: reporta por ciclo de generación (en turnos con tool round-trip sube; en turnos simples vuelve a la base ~7-8k = system prompt + tools). NO hay pérdida de contexto. Se agregó `cached` al log de telemetría y un comentario en `gemini_session.py` para que un prompt "bajo" no se malinterprete.
+
 ## 29. Voz Muda con Texto Visible: Interrupciones Fantasma del VAD de Gemini 3.8 (2026-09-19)
 
 - **Síntoma**: Atlas respondía (el texto de la transcripción se veía en terminal/HUD) pero **no se escuchaba nada** por los altavoces. Intermitente: frases cortas ocasionales sí sonaban.

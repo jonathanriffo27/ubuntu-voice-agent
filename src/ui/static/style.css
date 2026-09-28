@@ -62,6 +62,13 @@ body {
     border: 1px solid var(--border);
 }
 
+/* Modelo de respaldo en uso: el badge del header cambia a ámbar */
+#modelBadge.model-fallback {
+    background: rgba(251, 191, 36, 0.18);
+    color: #fbbf24;
+    border-color: rgba(251, 191, 36, 0.45);
+}
+
 .status-dot {
     width: 10px;
     height: 10px;

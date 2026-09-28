@@ -51,7 +51,11 @@ if __name__ == "__main__":
 
     # Inicializar el Event Bus y la UI de consola
     event_bus = EventBus()
-    ui = CLIInterface(event_bus)
+    ui = CLIInterface(
+        event_bus,
+        voice_model=config.provider.model,
+        fallback_model=config.provider.fallback_model
+    )
 
     # Inicializar el gestor de trayectoria y memoria de sesión persistente
     trajectory_manager = TrajectoryManager(event_bus=event_bus)
@@ -137,6 +141,21 @@ if __name__ == "__main__":
     mcp_manager = MCPServerManager()
 
     # Inicializar el proveedor LLM
+    def provider_factory(model_name: str):
+        """Construye un proveedor para otro modelo (fallback en caliente).
+
+        Misma voz/flags que el primario; NO toca la configuración: el fallback
+        vive solo en runtime y `provider.model` sigue siendo el primario.
+        """
+        if config.provider.type != "gemini":
+            return None
+        return GeminiProvider(
+            model_name=model_name,
+            voice_name=config.provider.voice,
+            server_vad=getattr(config.voice, "server_vad", False),
+            affective_dialog=getattr(config.voice, "affective_dialog", False)
+        )
+
     if config.provider.type == "gemini":
         provider = GeminiProvider(
             model_name=config.provider.model,
@@ -158,6 +177,7 @@ if __name__ == "__main__":
         overlay_server=overlay_server,
         reminder_scheduler=reminder_scheduler,
         approval_manager=approval_manager,
-        trajectory_manager=trajectory_manager
+        trajectory_manager=trajectory_manager,
+        provider_factory=provider_factory
     )
     assistant.run()

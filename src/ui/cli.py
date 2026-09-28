@@ -31,6 +31,7 @@ from src.events.base import (
     SessionReconnected,
     WakeWordDetected,
     WakeWordStandby,
+    SystemNotification,
 )
 
 # Códigos ANSI para diseño compacto y minimalista
@@ -51,9 +52,18 @@ class CLIInterface:
     Agrupa logs por prefijos limpios y da salida en tiempo real al habla del asistente.
     """
 
-    def __init__(self, event_bus=None):
+    def __init__(self, event_bus=None, voice_model: Optional[str] = None, fallback_model: Optional[str] = None):
         self.event_bus = event_bus
         self._in_text_stream = False
+        # Etiqueta del banner: modelo primario configurado y, si existe, el de
+        # respaldo. Los cambios en caliente (fallback activo / vuelta al
+        # primario) llegan como SystemNotification(kind="model").
+        if voice_model:
+            self._voice_label = voice_model
+            if fallback_model:
+                self._voice_label += f" · respaldo: {fallback_model}"
+        else:
+            self._voice_label = "Live Preview"
         # Última transcripción mostrada; si la siguiente la EXTIENDE (refinado
         # incremental de Gemini Live), se reescribe la misma línea en vez de
         # imprimir una nueva. Se reinicia al completar el turno.
@@ -72,7 +82,8 @@ class CLIInterface:
             print(f"\n{C_CYAN}╔══════════════════════════════════════════════════════════════╗{C_RESET}")
             print(f"{C_CYAN}║ {C_BOLD}⚡ ATLAS AI RUNTIME (Multi-Agent Auto-Evolution)             {C_RESET}{C_CYAN}║{C_RESET}")
             print(f"{C_CYAN}╚══════════════════════════════════════════════════════════════╝{C_RESET}")
-            print(f"{C_CYAN}│{C_RESET} 🎙️  {C_BOLD}Voz:{C_RESET}        Live Preview (Wake Word 'Alexa' o [Tab] para Mute)")
+            print(f"{C_CYAN}│{C_RESET} 🎙️  {C_BOLD}Voz:{C_RESET}        {self._voice_label}")
+            print(f"{C_CYAN}│{C_RESET}              {C_DIM}(Wake Word 'Alexa' o [Tab] para Mute){C_RESET}")
             print(f"{C_CYAN}│{C_RESET} 🤖  {C_BOLD}Subagente:{C_RESET}  Gemini 3.7 Flash High (CLIProxy Oracle)")
             print(f"{C_CYAN}│{C_RESET} 🔍  {C_BOLD}Búsqueda:{C_RESET}   Google → Tavily → Exa → DuckDuckGo/ddgs (Deep Research)")
             print(f"{C_CYAN}│{C_RESET} 🌐  {C_BOLD}Web HUD:{C_RESET}    http://localhost:7890 (Dashboard interactivo)")
@@ -87,6 +98,13 @@ class CLIInterface:
         elif isinstance(event, SessionReconnected):
             self._flush_stream()
             print(f"{C_CYAN}│{C_RESET} 🔄 {C_DIM}[Reconectado]{C_RESET} {C_GREEN}Conexión con Gemini restablecida.{C_RESET}")
+
+        elif isinstance(event, SystemNotification):
+            self._flush_stream()
+            if getattr(event, "kind", "info") == "model":
+                print(f"{C_CYAN}│{C_RESET} 🧠 {C_YELLOW}[Modelo]{C_RESET} {event.message}")
+            else:
+                print(f"{C_CYAN}│{C_RESET} 📢 {C_DIM}[Sistema]{C_RESET} {event.message}")
 
         elif isinstance(event, WakeWordDetected):
             self._flush_stream()

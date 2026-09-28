@@ -7,6 +7,12 @@ class ProviderConfig:
     type: str = "gemini"
     model: str = "gemini-3.8-live"
     voice: str = "Aoede"
+    # Fallback en caliente si el modelo primario queda no disponible (1011/503
+    # del backend de Live). NO sobreescribe `model`: es solo de runtime, en el
+    # próximo arranque (o al recuperarse el primario) se vuelve a `model`.
+    fallback_model: Optional[str] = None  # vacío/None = sin fallback
+    fallback_after_failures: int = 2      # racha de fallos seguidos para activarlo
+    fallback_probe_interval: float = 300.0  # segundos entre sondas de recuperación
 
 
 @dataclass

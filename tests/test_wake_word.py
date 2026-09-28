@@ -558,3 +558,83 @@ class TestRecorderListenLoop:
         assert recorder.state == RecorderState.STANDBY
         assert any(isinstance(e, WakeWordStandby) for e in events)
 
+class TestPausaLiberaMicrofono:
+    """Al pausar (Tab / /mute / HUD) se suelta el micrófono.
+
+    Cerrar el stream elimina el source-output de PulseAudio (medido: stop_stream
+    lo dejaba vivo; close lo elimina al instante), así GNOME apaga el indicador
+    sin mutear la fuente del sistema: no afecta a otras apps y un cierre duro de
+    Atlas no deja estado pegajoso. Al reanudar se reabre un stream nuevo (~6ms).
+    """
+
+    def _make_stream(self):
+        stream = MagicMock()
+        stream.is_active.return_value = True
+        stream.read.return_value = struct.pack('h' * 512, *([0] * 512))
+        return stream
+
+    async def _pump_listen(self, recorder, until=None, seconds=0.3):
+        task = asyncio.create_task(recorder.listen(asyncio.Queue(), asyncio.Queue()))
+        try:
+            if until is None:
+                await asyncio.sleep(seconds)
+            else:
+                deadline = time.monotonic() + seconds
+                while not until() and time.monotonic() < deadline:
+                    await asyncio.sleep(0.005)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def test_pausar_cierra_el_stream_y_reanudar_lo_reabre(self):
+        viejo = self._make_stream()
+        nuevo = self._make_stream()
+        factory = MagicMock(return_value=nuevo)
+        rec = AudioRecorder(viejo, EventBus(), ConversationContext(), in_stream_factory=factory)
+
+        rec.is_paused = True
+        await self._pump_listen(rec, until=lambda: rec._capture_released)
+        viejo.close.assert_called_once()  # el micrófono quedó libre
+        assert rec.in_stream is viejo     # en pausa no se reabre nada
+
+        rec.is_paused = False
+        await self._pump_listen(rec, until=lambda: rec.in_stream is nuevo)
+        factory.assert_called_once()
+        assert rec._capture_released is False
+
+    async def test_pausa_repetida_cierra_una_sola_vez(self):
+        viejo = self._make_stream()
+        factory = MagicMock(return_value=self._make_stream())
+        rec = AudioRecorder(viejo, EventBus(), ConversationContext(), in_stream_factory=factory)
+
+        rec.is_paused = True
+        await self._pump_listen(rec, until=lambda: rec._capture_released)
+        await self._pump_listen(rec, seconds=0.05)
+
+        viejo.close.assert_called_once()  # idempotente, sin parpadeos del indicador
+
+    async def test_sin_factory_usa_stop_y_start_stream(self):
+        """Integraciones sin fábrica (tests/embebidos): pausa sin cerrar el stream."""
+        stream = self._make_stream()
+        rec = AudioRecorder(stream, EventBus(), ConversationContext())
+
+        rec.is_paused = True
+        await self._pump_listen(rec, until=lambda: rec._capture_released)
+        stream.stop_stream.assert_called_once()
+        stream.close.assert_not_called()
+
+        rec.is_paused = False
+        await self._pump_listen(rec, until=lambda: not rec._capture_released)
+        stream.start_stream.assert_called_once()
+
+    def test_close_capture_cierra_el_stream_actual(self):
+        stream = self._make_stream()
+        rec = AudioRecorder(stream, EventBus(), ConversationContext())
+
+        rec.close_capture()
+
+        stream.close.assert_called_once()
+        assert rec._capture_released is True

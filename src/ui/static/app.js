@@ -15,6 +15,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnToggleMic = document.getElementById('btnToggleMic');
     const btnClearChat = document.getElementById('btnClearChat');
     const waveContainer = document.getElementById('waveContainer');
+    const modelBadge = document.getElementById('modelBadge');
 
     // HITL Elements
     const hitlBanner = document.getElementById('hitlBanner');
@@ -60,6 +61,7 @@ document.addEventListener('DOMContentLoaded', () => {
             connectionStatus.textContent = 'En línea';
             pulseIndicator.textContent = '● Escuchando';
             waveContainer.classList.add('active');
+            refreshVoiceStatus();
         };
 
         ws.onclose = () => {
@@ -99,6 +101,24 @@ document.addEventListener('DOMContentLoaded', () => {
         toolsFeed.insertBefore(item, toolsFeed.firstChild);
     }
 
+    function refreshVoiceStatus() {
+        fetch('/api/status')
+            .then(resp => resp.json())
+            .then(data => actualizarModelo(data.voice))
+            .catch(err => console.debug('No se pudo consultar el estado de voz:', err));
+    }
+
+    function actualizarModelo(voice) {
+        if (!voice || !voice.active_model) return;
+        const activo = voice.active_model;
+        const enFallback = !!voice.fallback_active;
+        modelBadge.textContent = enFallback ? `🎙️ ${activo} (respaldo)` : `🎙️ ${activo}`;
+        modelBadge.title = enFallback
+            ? `Respaldo activo. Primario: ${voice.model}`
+            : `Modelo primario activo${voice.fallback_model ? ` · respaldo: ${voice.fallback_model}` : ''}`;
+        modelBadge.classList.toggle('model-fallback', enFallback);
+    }
+
     function handleEvent(event) {
         const type = event.type;
         const data = event.data || {};
@@ -119,6 +139,11 @@ document.addEventListener('DOMContentLoaded', () => {
             hideHITLBanner();
         } else if (type === 'TaskDelegated') {
             appendToolEvent('SUBAGENT', `🤖 [${data.task_id}] ${data.instruction}`);
+        } else if (type === 'SystemNotification' && data.message) {
+            appendMessage(`📢 ${data.message}`, false);
+            if (data.kind === 'model') {
+                refreshVoiceStatus();  // badge del header: primario o respaldo
+            }
         } else if (type === 'WakeWordDetected') {
             const conf = Math.round((data.confidence || 0) * 100);
             appendMessage(`🔔 Wake Word '${data.wake_word}' detectado (${conf}%)`, false);

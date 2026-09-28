@@ -50,6 +50,14 @@ class GeminiSession(ProviderSession):
         """
         await self._session.send_realtime_input(audio_stream_end=True)
 
+    async def close(self) -> None:
+        """Cierra la sesión nativa.
+
+        Lo usa el fallback en caliente para forzar una reconexión limpia (p. ej.
+        volver al modelo primario en cuanto la sonda de recuperación lo ve sano).
+        """
+        await self._session.close()
+
     async def send_tool_response(self, responses: List[Any]) -> None:
         formatted = []
         for r in responses:
@@ -93,12 +101,20 @@ class GeminiSession(ProviderSession):
                 logger.info(f"Tool calls canceladas por el servidor: {ids}")
                 yield ToolCallsCancelled(ids=ids)
 
-            # Telemetría de consumo de tokens
+            # Telemetría de consumo de tokens. OJO: `prompt_token_count` de Live
+            # 3.8 NO es acumulativo del historial: reporta por ciclo de
+            # generación (sube en turnos con tools y vuelve a la base ~8k en
+            # turnos simples). Medido con memoria verificada de punta a punta
+            # (el modelo recordó un dato dado 3 turnos antes), así que un prompt
+            # "bajo" NO implica pérdida de contexto. `cached` se registra por
+            # completitud (en las pruebas siempre fue 0).
             usage = getattr(msg, "usage_metadata", None)
             if usage is not None:
+                cached = getattr(usage, "cached_content_token_count", 0) or 0
                 logger.debug(
                     f"Uso de tokens: total={getattr(usage, 'total_token_count', '?')} "
                     f"(prompt={getattr(usage, 'prompt_token_count', '?')}, "
+                    f"cached={cached}, "
                     f"respuesta={getattr(usage, 'response_token_count', '?')})"
                 )
 

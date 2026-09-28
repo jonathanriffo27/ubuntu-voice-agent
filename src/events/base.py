@@ -169,4 +169,7 @@ class ErrorOccurred(Event):
 @dataclass
 class SystemNotification(Event):
     message: str
+    # "info" (documentos, avisos generales) o "model" (cambios de proveedor de
+    # voz: el HUD y la terminal lo destacan y actualizan el modelo activo).
+    kind: str = "info"
 

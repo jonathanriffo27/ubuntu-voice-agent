@@ -38,6 +38,9 @@ class WebOverlayServer:
         self.host = host
         self.on_user_input = on_user_input_callback
         self.on_toggle_pause = on_toggle_pause_callback
+        # Callback opcional para reportar el modelo de voz activo en /api/status
+        # (el Assistant lo inyecta en run_async; sin él, el campo va vacío).
+        self.get_voice_status: Optional[Callable[[], dict]] = None
         self.approval_manager = approval_manager
         self.trajectory_manager = trajectory_manager
         self.reminder_scheduler = reminder_scheduler
@@ -73,11 +76,18 @@ class WebOverlayServer:
         """Endpoint de estado del sistema."""
         pending_hitl = len(self.approval_manager.list_pending()) if self.approval_manager else 0
         active_reminders = len(self.reminder_scheduler.list_pending()) if self.reminder_scheduler else 0
+        voice_status = {}
+        if self.get_voice_status:
+            try:
+                voice_status = self.get_voice_status() or {}
+            except Exception:
+                voice_status = {}
         return web.json_response({
             "status": "online",
             "clients_connected": len(self.sockets),
             "pending_hitl_approvals": pending_hitl,
-            "active_reminders": active_reminders
+            "active_reminders": active_reminders,
+            "voice": voice_status
         })
 
     async def handle_api_trajectory(self, request: web.Request) -> web.Response:

@@ -59,6 +59,7 @@ graph TD
 
 ### 1. 🎙️ Frontend de Voz de Ultra Baja Latencia & Streaming
 - **Modelo**: `gemini-3.8-live` vía **Google GenAI Multimodal Live API** (WebSocket bidireccional dúplex).
+- **Fallback en caliente de modelo**: si el backend del primario queda saturado (`1011`/`503` en sesiones cortas), Atlas cambia en runtime a `provider.fallback_model` (`gemini-3.1-flash-live-preview` por defecto) **sin tocar `config.yaml`**; sondea al primario cada `fallback_probe_interval` y vuelve solo en cuanto se recupera. Un aviso aparece en HUD/consola al activarse y al volver.
 - **Voz nativa**: Síntesis y reconocimiento End-to-End sin pipelines STT/TTS lentos.
 - **Transcripción y Visualización en Terminal**: Emisión de texto en tiempo real (`output_audio_transcription`) con prefijo `│ 🤖 Atlas: ` en la consola mientras el audio suena por los parlantes.
 - **Detección VAD Multi-Feature**: Filtra ruidos mecánicos y respiración mediante análisis adaptativo de energía RMS, ZCR (Zero-Crossing Rate) y Crest Factor.
@@ -75,6 +76,7 @@ graph TD
   - `Shift + Espacio`: Protocolo extendido `modifyOtherKeys`.
   - `Ctrl + Espacio`: Compatibilidad universal Linux VT100/ANSI.
   - `F2`: Tecla de función superior.
+- **Pausa sin mute del sistema**: al pausar, Atlas cierra el stream de captura (el `source-output` de PulseAudio desaparece al instante y el icono de micrófono de GNOME se apaga) y lo reabre al reanudar (~6ms). No se mutea la fuente del sistema: otras apps conservan el micrófono y un cierre inesperado de Atlas no deja estado pegajoso.
 - **Ajuste de Sensibilidad VAD**: `Ctrl + Arriba` / `Ctrl + Abajo` (+500 / -500).
 - **Aprobación de 1 Tecla**: Presiona `[Enter]` en una línea vacía para aprobar solicitudes HITL pendientes, o escribe `n`/`no` para rechazar.
 - **Comandos Slash Rápidos**: `/mute`, `/help`, `/clear`.
@@ -119,6 +121,7 @@ graph TD
 
 ### 10. 📊 Dashboard Web HUD en Tiempo Real (`http://localhost:7890`)
 - Visualizador de ondas de audio, chat bidireccional texto/voz, botón de mute/pausa, visualizador de recordatorios y modal HITL de aprobaciones.
+- **Modelo activo en vivo**: badge en el header (`/api/status`) que muestra el modelo en uso y se pone ámbar cuando el respaldo está activo; los cambios de proveedor también aparecen como notificación en el chat y en la consola.
 
 ---
 

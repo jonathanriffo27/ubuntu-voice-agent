@@ -2,10 +2,11 @@ import asyncio
 import math
 import struct
 import sys
+import threading
 import time
 from collections import deque
 from enum import Enum, auto
-from typing import Optional
+from typing import Callable, Optional
 
 from src.voice.constants import AUDIO_IN_RATE, CHUNK_SIZE
 from src.events.base import (
@@ -36,12 +37,26 @@ class AudioRecorder:
         in_stream,
         event_bus: EventBus,
         conversation_context: ConversationContext,
-        voice_config=None
+        voice_config=None,
+        in_stream_factory: Optional[Callable[[], object]] = None
     ):
         self.in_stream = in_stream
         self.event_bus = event_bus
         self.conversation_context = conversation_context
         self._voice_config = voice_config
+        # Fábrica para reabrir el stream de captura tras una pausa (ver
+        # _release_capture/_acquire_capture). El asistente la inyecta en
+        # producción; si falta, la pausa degrada a stop_stream/start_stream.
+        self.in_stream_factory = in_stream_factory
+        self._capture_released = False
+        # Evita spamear el log si el dispositivo no puede reabrirse (se reintenta
+        # cada 500ms hasta que vuelva).
+        self._acquire_error_logged = False
+        # Serializa el read bloqueante (hilo de to_thread) con el cierre del
+        # stream. asyncio.to_thread no cancela el read en vuelo: sin este lock,
+        # cleanup podía cerrar el stream en paralelo al read y PortAudio hacía
+        # segfault (reproducido en prueba real de pausa/cleanup).
+        self._stream_lock = threading.Lock()
 
         self.silence_threshold: int | None = None
         self.processing_tool = False
@@ -89,11 +104,96 @@ class AudioRecorder:
 
     @is_paused.setter
     def is_paused(self, value: bool):
+        if value == self.is_paused:
+            return
         if value:
             self._state = RecorderState.MUTED
         else:
             mode = getattr(self._voice_config, 'mode', 'always_on') if self._voice_config else 'always_on'
             self._state = RecorderState.STANDBY if mode == 'wake_word' else RecorderState.ACTIVE
+        # El stream se cierra/reabre en el bucle listen (mismo hilo que lee), no
+        # aquí: cerrar un stream con un read() en vuelo desde otro hilo es una
+        # carrera. El cambio de estado es síncrono e inmediato para la UI.
+
+    def _release_capture(self) -> None:
+        """Suelta el micrófono mientras Atlas está en pausa.
+
+        Medido con PyAudio + PulseAudio: stop_stream() deja el source-output
+        vivo (seguía apareciendo 2s después, el icono de GNOME no se apaga),
+        pero close() lo elimina al instante. Como un stream cerrado no se puede
+        reabrir, se reabre uno nuevo con la fábrica (~6ms medidos).
+
+        No se toca el mute del sistema: pausar Atlas no debe silenciar el
+        micrófono para las demás apps, y así un cierre duro del proceso no deja
+        estado pegajoso.
+        """
+        if self._capture_released:
+            return
+        # Si hay un read en vuelo (p. ej. restos de una task cancelada), esperar
+        # a que termine: cerrar el stream en paralelo revienta PortAudio.
+        if not self._stream_lock.acquire(timeout=1.0):
+            return  # se reintenta en la próxima vuelta del bucle
+        try:
+            if self.in_stream is not None:
+                if self.in_stream_factory is not None:
+                    self.in_stream.close()
+                elif hasattr(self.in_stream, "stop_stream"):
+                    # Sin fábrica no se puede reabrir: pausar sin cerrar.
+                    self.in_stream.stop_stream()
+            self._capture_released = True
+            logger.info("Micrófono desactivado (captura liberada).")
+        except Exception as e:
+            logger.debug(f"No se pudo liberar el stream de captura: {e}")
+        finally:
+            self._stream_lock.release()
+
+    def _acquire_capture(self) -> bool:
+        """Reabre el stream de captura tras una pausa. False si falló (se reintenta)."""
+        if not self._capture_released:
+            return True
+        if not self._stream_lock.acquire(timeout=1.0):
+            return False
+        try:
+            if self.in_stream_factory is not None:
+                self.in_stream = self.in_stream_factory()
+            elif hasattr(self.in_stream, "start_stream"):
+                self.in_stream.start_stream()
+            self._capture_released = False
+            self._acquire_error_logged = False
+            logger.info("Micrófono reactivado (captura reabierta).")
+            return True
+        except Exception as e:
+            if not self._acquire_error_logged:
+                logger.error(f"No se pudo reabrir el stream de captura: {e}")
+                self._acquire_error_logged = True
+            else:
+                logger.debug(f"Reintento de reapertura de captura falló: {e}")
+            return False
+        finally:
+            self._stream_lock.release()
+
+    def _read_chunk(self):
+        """Read bloqueante de un chunk, serializado con el cierre del stream."""
+        with self._stream_lock:
+            return self.in_stream.read(CHUNK_SIZE, exception_on_overflow=False)
+
+    def close_capture(self) -> None:
+        """Cierra el stream de captura actual (cleanup del asistente).
+
+        Espera a que termine un read en vuelo antes de cerrar (to_thread no se
+        puede cancelar). Si no lo logra, omite el cierre: p.terminate() del
+        asistente libera lo que quede.
+        """
+        self._capture_released = True  # evita que el bucle listen intente reabrirlo
+        acquired = self._stream_lock.acquire(timeout=1.0)
+        try:
+            if acquired and self.in_stream is not None:
+                self.in_stream.close()
+        except Exception:
+            pass
+        finally:
+            if acquired:
+                self._stream_lock.release()
 
     @property
     def state(self) -> RecorderState:
@@ -143,7 +243,7 @@ class AudioRecorder:
         4. Calcula un umbral óptimo de voz con clamp seguro entre 1200 y 3500 RMS.
         """
         for _ in range(max_drain_frames):
-            data = await asyncio.to_thread(self.in_stream.read, CHUNK_SIZE, exception_on_overflow=False)
+            data = await asyncio.to_thread(self._read_chunk)
             shorts = struct.unpack('h' * (len(data) // 2), data)
             if shorts:
                 rms = math.sqrt(sum(s * s for s in shorts) / len(shorts))
@@ -152,7 +252,7 @@ class AudioRecorder:
 
         samples = []
         for _ in range(sample_frames):
-            data = await asyncio.to_thread(self.in_stream.read, CHUNK_SIZE, exception_on_overflow=False)
+            data = await asyncio.to_thread(self._read_chunk)
             shorts = struct.unpack('h' * (len(data) // 2), data)
             if shorts:
                 rms = math.sqrt(sum(s * s for s in shorts) / len(shorts))
@@ -194,17 +294,32 @@ class AudioRecorder:
 
         while True:
             try:
+                # 0. Pausa manual: soltar el micrófono (cerrar el stream elimina
+                #    el source-output de PulseAudio y GNOME apaga el indicador;
+                #    las demás apps no ven un mute del sistema). El cierre se
+                #    hace acá y no en el setter para no cerrar un stream con un
+                #    read() en vuelo desde otro hilo.
+                if self._state == RecorderState.MUTED:
+                    self._release_capture()
+                    await asyncio.sleep(0.05)
+                    continue
+
+                # 0b. Reanudación tras la pausa: reabrir la captura antes de leer.
+                if self._capture_released and not self._acquire_capture():
+                    await asyncio.sleep(0.5)  # reintentar sin matar la escucha
+                    continue
+
                 if not self.in_stream.is_active():
                     break
 
-                data = await asyncio.to_thread(self.in_stream.read, CHUNK_SIZE, exception_on_overflow=False)
+                data = await asyncio.to_thread(self._read_chunk)
 
                 # Umbral dinámico configurable en tiempo real
                 ww_threshold = float(getattr(self._voice_config, 'wake_word_threshold', 0.35)) if self._voice_config else 0.35
 
-                # 1. Estado MUTED: silenciado total
+                # 1. Pausaron durante el read: descartar el chunk (el release
+                #    efectivo ocurre en la próxima vuelta del bucle).
                 if self._state == RecorderState.MUTED:
-                    await asyncio.sleep(0.001)
                     continue
 
                 # 2. Estado STANDBY: solo detección local de wake word (0 tráfico a Gemini)

@@ -82,3 +82,25 @@ async def test_web_overlay_api_routes():
         os.remove("test_overlay_traj.json")
     if os.path.exists("test_overlay_traj.json.tmp"):
         os.remove("test_overlay_traj.json.tmp")
+
+
+@pytest.mark.asyncio
+async def test_api_status_incluye_modelo_de_voz():
+    overlay = WebOverlayServer(EventBus(), port=8891)
+    overlay.get_voice_status = lambda: {
+        "model": "gemini-3.8-live",
+        "fallback_model": "gemini-3.1-flash-live-preview",
+        "active_model": "gemini-3.1-flash-live-preview",
+        "fallback_active": True,
+    }
+    req = make_mocked_request('GET', '/api/status')
+    resp = await overlay.handle_api_status(req)
+    data = json.loads(resp.text)
+
+    assert data["voice"]["active_model"] == "gemini-3.1-flash-live-preview"
+    assert data["voice"]["fallback_active"] is True
+
+    # Sin callback, el campo va vacío pero el endpoint sigue respondiendo
+    overlay.get_voice_status = None
+    resp2 = await overlay.handle_api_status(req)
+    assert json.loads(resp2.text)["voice"] == {}

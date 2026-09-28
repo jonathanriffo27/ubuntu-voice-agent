@@ -1,12 +1,13 @@
 import asyncio
 import json
 import os
+import signal
 import sys
 import time
 import traceback
 import contextlib
 
-from typing import List, Optional
+from typing import Callable, List, Optional
 import pyaudio
 
 from src.voice.constants import AUDIO_FORMAT, AUDIO_CHANNELS, AUDIO_IN_RATE, AUDIO_OUT_RATE, CHUNK_SIZE
@@ -53,9 +54,22 @@ class Assistant:
         credential_broker=None,
         max_reconnect_attempts: Optional[int] = None,
         reconnect_initial_backoff: float = 1.0,
-        reconnect_max_backoff: float = 30.0
+        reconnect_max_backoff: float = 30.0,
+        provider_factory: Optional[Callable[[str], BaseProvider]] = None
     ):
         self.provider = provider
+        # Fallback en caliente: si el primario queda no disponible (1011/503 del
+        # backend de Live), se cambia a `provider.fallback_model` solo en runtime
+        # (la config nunca se sobreescribe). `provider_factory` construye el
+        # proveedor de respaldo con la misma voz/flags.
+        self._provider_factory = provider_factory
+        self._primary_provider = provider
+        self._active_provider = provider
+        self._fallback_provider = None
+        self._fallback_active = False
+        self._unavailable_streak = 0
+        self._provider_switch_requested = False
+        self._probe_task: Optional[asyncio.Task] = None
         self.registry = registry
         self.config = config
         self.knowledge_manager = knowledge_manager
@@ -439,6 +453,15 @@ class Assistant:
                 # Nuevo mensaje por texto = el usuario sigue aquí: anula un cierre pendiente.
                 self.recorder.pending_sleep = False
             await self._active_session.send_text(text, end_of_turn=True)
+        else:
+            # Sin sesión (reconectando o recién cambiado al fallback): el mensaje
+            # se pierde. Antes se ignoraba en silencio y parecía que Atlas no
+            # respondía a propósito.
+            logger.warning(f"💬 Mensaje de texto descartado (sin sesión activa): {text[:120]}")
+            self.event_bus.publish(SystemNotification(
+                self.conversation_context,
+                message="Mensaje no enviado: Atlas está reconectando con el proveedor. Reintenta en unos segundos.",
+            ))
 
     def toggle_microphone_pause(self) -> None:
         """Pausa o reanuda el micrófono."""
@@ -446,6 +469,191 @@ class Assistant:
             self.recorder.is_paused = not self.recorder.is_paused
             state = "PAUSADO ⏸️" if self.recorder.is_paused else "REANUDADO ▶️"
             logger.info(f"Estado micrófono alternado: {state}")
+
+    # ------------------------------------------------------------------
+    # Fallback en caliente del proveedor (saturación del backend de Live)
+    # ------------------------------------------------------------------
+
+    @property
+    def _primary_model(self) -> str:
+        return getattr(self._primary_provider, "model_name", "") or "modelo primario"
+
+    def get_voice_status(self) -> dict:
+        """Estado del proveedor de voz para el HUD (modelo activo y respaldo)."""
+        return {
+            "model": self._primary_model,
+            "fallback_model": self._fallback_model or "",
+            "active_model": getattr(self._active_provider, "model_name", "") or self._primary_model,
+            "fallback_active": self._fallback_active,
+        }
+
+    @property
+    def _fallback_model(self) -> Optional[str]:
+        provider_cfg = getattr(self.config, "provider", None) if self.config else None
+        return getattr(provider_cfg, "fallback_model", None) if provider_cfg else None
+
+    def _fallback_enabled(self) -> bool:
+        return bool(self._provider_factory and self._fallback_model)
+
+    @property
+    def _fallback_failures_threshold(self) -> int:
+        provider_cfg = getattr(self.config, "provider", None) if self.config else None
+        value = getattr(provider_cfg, "fallback_after_failures", 2) if provider_cfg else 2
+        try:
+            return max(1, int(value))
+        except Exception:
+            return 2
+
+    def _track_provider_health(self, session_start_time: float, error: BaseException) -> None:
+        """Cuenta fallos cortos de disponibilidad del primario y activa el fallback.
+
+        Un 1011 tras una sesión larga es el idle-timeout normal del servidor: no
+        debe gatillar el fallback. Solo cuentan los fallos de sesiones cortas
+        (<15s) con señales de backend no disponible (1011/503/saturación).
+        """
+        if self._provider_switch_requested:
+            # Cierre voluntario para volver al primario: no es un fallo.
+            self._provider_switch_requested = False
+            logger.info("Reconexión voluntaria para volver al modelo principal.")
+            return
+
+        if self._fallback_active or not self._fallback_enabled():
+            return
+
+        if isinstance(error, BaseExceptionGroup):
+            err_str = " ".join(str(exc) for exc in error.exceptions).lower()
+        else:
+            err_str = str(error).lower()
+
+        is_unavailable = any(k in err_str for k in ("1011", "503", "high demand", "unavailable", "internal error"))
+        short_session = (time.time() - session_start_time) < 15.0
+
+        if is_unavailable and short_session:
+            self._unavailable_streak += 1
+            umbral = self._fallback_failures_threshold
+            logger.warning(
+                f"{self._primary_model} no disponible (fallo corto {self._unavailable_streak}/{umbral}): {error}"
+            )
+            if self._unavailable_streak >= umbral:
+                self._activate_fallback()
+        elif not short_session:
+            # Sesión larga: el primario estaba sano, la racha se descarta.
+            self._unavailable_streak = 0
+
+    def _is_session_idle(self) -> bool:
+        """True si no hay turno, tool ni audio en curso (apto para reconectar)."""
+        if self._active_session is None:
+            return True
+        if self.recorder and (self.recorder.turn_in_flight or self.recorder.processing_tool
+                              or self.recorder.waiting_for_model):
+            return False
+        if self.player and getattr(self.player, "is_speaking", False):
+            return False
+        return True
+
+    def _activate_fallback(self) -> bool:
+        """Cambia el proveedor activo al modelo de respaldo (solo runtime)."""
+        if not self._fallback_enabled() or self._fallback_active:
+            return False
+        if self._fallback_provider is None:
+            try:
+                self._fallback_provider = self._provider_factory(self._fallback_model)
+            except Exception as e:
+                logger.error(f"No se pudo construir el proveedor de fallback ({self._fallback_model}): {e}")
+                return False
+        if self._fallback_provider is None:
+            return False
+
+        self._active_provider = self._fallback_provider
+        self._fallback_active = True
+        self._unavailable_streak = 0
+        mensaje = (
+            f"Gemini {self._primary_model} no está disponible (saturación del servicio). "
+            f"Usando {self._fallback_model} temporalmente; se volverá al principal en cuanto se recupere."
+        )
+        logger.warning(f"⚠️ {mensaje}")
+        self.event_bus.publish(SystemNotification(self.conversation_context, message=mensaje, kind="model"))
+        # La sesión del primario está muerta (o moribunda): soltarla ya para que
+        # un mensaje del usuario en la ventana de reconexión no se envíe a un
+        # websocket cerrándose (se pierde igual, pero sin errores fantasma).
+        self._active_session = None
+
+        if self._probe_task is None or self._probe_task.done():
+            self._probe_task = asyncio.create_task(self._probe_primary_loop())
+        return True
+
+    async def _probe_primary_once(self) -> bool:
+        """Sonda end-to-end: sesión desechable + un mensaje; True si responde."""
+        if not self._provider_factory:
+            return False
+        probe = None
+        try:
+            probe = self._provider_factory(self._primary_model)
+            async with probe.connect("Responde en una palabra.", []) as session:
+                await session.send_text("ping", end_of_turn=True)
+
+                async def _esperar_respuesta() -> bool:
+                    async for event in session.receive():
+                        if isinstance(event, (TextChunk, AudioChunk, TurnComplete)):
+                            return True
+                    return False
+
+                return await asyncio.wait_for(_esperar_respuesta(), timeout=8.0)
+        except Exception as e:
+            logger.debug(f"Sonda al modelo primario falló: {e}")
+            return False
+
+    async def _probe_primary_loop(self) -> None:
+        """Cada N segundos prueba si el primario volvió; si sí, retoma el control."""
+        provider_cfg = getattr(self.config, "provider", None) if self.config else None
+        interval = float(getattr(provider_cfg, "fallback_probe_interval", 300.0)) if provider_cfg else 300.0
+        interval = max(10.0, interval)
+        try:
+            while self._fallback_active:
+                await asyncio.sleep(interval)
+                if not self._fallback_active:
+                    break
+                if await self._probe_primary_once():
+                    await self._return_to_primary()
+                    break
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"Bucle de sonda del primario terminó: {e}")
+
+    async def _return_to_primary(self) -> None:
+        """El primario volvió: reactivarlo y refrescar la sesión si está idle."""
+        self._active_provider = self._primary_provider
+        self._fallback_active = False
+        self._unavailable_streak = 0
+        mensaje = f"Gemini {self._primary_model} disponible de nuevo. Volviendo al modelo principal."
+        logger.info(f"✅ {mensaje}")
+        self.event_bus.publish(SystemNotification(self.conversation_context, message=mensaje, kind="model"))
+
+        # Volver YA si no hay nada en curso; si el usuario está hablando, esperar
+        # a que quede idle (hasta 5 min; si no, se aplica en la próxima reconexión).
+        deadline = time.monotonic() + 300.0
+        while not self._is_session_idle() and time.monotonic() < deadline:
+            await asyncio.sleep(15.0)
+        if self._is_session_idle():
+            await self._force_session_refresh()
+
+    async def _force_session_refresh(self) -> None:
+        """Cierra la sesión activa para que el loop reconecte con el primario."""
+        session = self._active_session
+        if session is None:
+            return
+        self._provider_switch_requested = True
+        logger.info("Refrescando sesión para volver al modelo principal...")
+        close = getattr(session, "close", None)
+        if close is None:
+            self._provider_switch_requested = False
+            logger.debug("La sesión activa no soporta close(); se volverá al primario en la próxima reconexión.")
+            return
+        try:
+            await close()
+        except Exception:
+            pass
 
     async def run_async(self):
         @contextlib.contextmanager
@@ -460,6 +668,21 @@ class Assistant:
                 os.dup2(old_stderr, 2)
                 os.close(devnull)
                 os.close(old_stderr)
+
+        # Cierre controlado ante SIGTERM/SIGHUP: cerrar la ventana de la terminal
+        # enviaba SIGHUP y el proceso moría sin pasar por cleanup_async. Cancelar
+        # la task principal ejecuta el finally de run_async (cleanup_async).
+        main_task = asyncio.current_task()
+        if main_task is not None:
+            loop = asyncio.get_running_loop()
+            shutdown_signals = [signal.SIGTERM]
+            if hasattr(signal, "SIGHUP"):
+                shutdown_signals.append(signal.SIGHUP)
+            for sig in shutdown_signals:
+                try:
+                    loop.add_signal_handler(sig, main_task.cancel)
+                except (NotImplementedError, RuntimeError, ValueError):
+                    pass
 
         # Iniciar servidores MCP si están configurados
         if self.mcp_manager and self.config and getattr(self.config, 'mcp_servers', None):
@@ -476,6 +699,8 @@ class Assistant:
         if self.overlay_server and self.config:
             self.overlay_server.on_user_input = self.send_text_message
             self.overlay_server.on_toggle_pause = self.toggle_microphone_pause
+            # El HUD consulta el modelo activo (incluye si el fallback está en uso).
+            self.overlay_server.get_voice_status = self.get_voice_status
             ui_cfg = getattr(self.config, 'ui', None)
             auto_open = getattr(ui_cfg, 'auto_open_browser', False) if ui_cfg else False
             try:
@@ -493,13 +718,7 @@ class Assistant:
 
         logger.info("Cargando modelo de wake word...")
         with suppress_stderr():
-            self.in_stream = self.p.open(
-                format=AUDIO_FORMAT,
-                channels=AUDIO_CHANNELS,
-                rate=AUDIO_IN_RATE,
-                input=True,
-                frames_per_buffer=CHUNK_SIZE
-            )
+            self.in_stream = self._open_input_stream()
             self.out_stream = self.p.open(
                 format=AUDIO_FORMAT,
                 channels=AUDIO_CHANNELS,
@@ -508,12 +727,20 @@ class Assistant:
                 frames_per_buffer=1024
             )
 
+        def open_input_stream():
+            # Reapertura tras una pausa que liberó el micrófono (ver
+            # AudioRecorder._release_capture): cada reanudación abre un stream
+            # nuevo, así que el cleanup del asistente delega en el recorder.
+            with suppress_stderr():
+                return self._open_input_stream()
+
         voice_cfg = self.config.voice if self.config else None
         self.recorder = AudioRecorder(
             self.in_stream,
             self.event_bus,
             self.conversation_context,
-            voice_config=voice_cfg
+            voice_config=voice_cfg,
+            in_stream_factory=open_input_stream
         )
         # Inicializar modelo de wake word y calibración de micrófono en paralelo
         await asyncio.gather(
@@ -542,9 +769,19 @@ class Assistant:
 
         # 1.1. Suscribir notificaciones generales del sistema (ej: documentos listos)
         def _on_system_notification(event: SystemNotification):
-            if self._active_session:
+            session = self._active_session
+            if session:
                 msg = f"[SISTEMA: {event.message}]"
-                asyncio.create_task(self._active_session.send_text(msg, end_of_turn=False))
+
+                async def _enviar_notificacion():
+                    try:
+                        await session.send_text(msg, end_of_turn=False)
+                    except Exception as e:
+                        # La sesión puede estar muriendo (p. ej. justo al activar
+                        # el fallback): no queremos task exceptions sin observar.
+                        logger.debug(f"No se pudo enviar la notificación al modelo: {e}")
+
+                asyncio.create_task(_enviar_notificacion())
 
         self.event_bus.subscribe(SystemNotification, _on_system_notification)
 
@@ -591,8 +828,11 @@ class Assistant:
 
                 sys_prompt, _ = build_system_prompt(self.knowledge_manager, trajectory_manager=self.trajectory_manager, config=self.config)
 
+                # Proveedor de esta sesión: puede ser el primario o el fallback
+                # en caliente si el backend del primario está saturado.
+                provider = self._active_provider
                 try:
-                    async with self.provider.connect(
+                    async with provider.connect(
                         system_prompt=sys_prompt,
                         tools=self.registry.get_all_tools()
                     ) as session:
@@ -655,6 +895,8 @@ class Assistant:
 
                             if not is_idle_timeout and any(not isinstance(exc, asyncio.CancelledError) for exc in eg.exceptions):
                                 raise eg
+                            else:
+                                self._track_provider_health(session_start_time, eg)
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     logger.info("Sesión finalizada por el usuario.")
                     break
@@ -675,8 +917,11 @@ class Assistant:
                     # reconexión con handle falló (o la sesión apenas vivió), el próximo
                     # intento debe abrir sesión limpia — reutilizarlo en bucle mataba a
                     # Atlas con 5 fallos rápidos tras ~15 min de inactividad.
-                    if attempt > 1 and hasattr(self.provider, "reset_session_handle"):
-                        self.provider.reset_session_handle()
+                    if attempt > 1 and hasattr(provider, "reset_session_handle"):
+                        provider.reset_session_handle()
+
+                    # Racha de fallos cortos de disponibilidad → fallback en caliente
+                    self._track_provider_health(session_start_time, e)
 
                     if is_idle_timeout:
                         logger.info("Sesión con el proveedor reiniciada (corte o error transitorio). Reconectando...")
@@ -696,10 +941,26 @@ class Assistant:
                     self._active_session = None
 
         finally:
+            if self._probe_task and not self._probe_task.done():
+                self._probe_task.cancel()
             terminal_task.cancel()
             recorder_task.cancel()
             player_task.cancel()
             await self.cleanup_async()
+
+    def _open_input_stream(self):
+        """Abre un stream de captura nuevo (se usa al reanudar tras una pausa).
+
+        La pausa cierra el stream para soltar el micrófono y apagar el indicador
+        de GNOME; como un stream cerrado no se reabre, cada reanudación crea uno.
+        """
+        return self.p.open(
+            format=AUDIO_FORMAT,
+            channels=AUDIO_CHANNELS,
+            rate=AUDIO_IN_RATE,
+            input=True,
+            frames_per_buffer=CHUNK_SIZE
+        )
 
     async def cleanup_async(self):
         """Limpieza asíncrona de recursos de audio, HUD, recordatorios y MCP."""
@@ -709,12 +970,14 @@ class Assistant:
             sys.stderr.flush()
             os.dup2(devnull, 2)
             try:
-                if self.in_stream and self.in_stream.is_active():
-                    self.in_stream.stop_stream()
+                # El recorder pudo reemplazar el stream al reanudar una pausa:
+                # delegar en él el cierre de la captura actual.
+                if self.recorder:
+                    self.recorder.close_capture()
+                elif self.in_stream:
+                    self.in_stream.close()
                 if self.out_stream and self.out_stream.is_active():
                     self.out_stream.stop_stream()
-                if self.in_stream:
-                    self.in_stream.close()
                 if self.out_stream:
                     self.out_stream.close()
                 if self.p:
@@ -748,5 +1011,10 @@ class Assistant:
         try:
             asyncio.run(self.run_async())
         except KeyboardInterrupt:
+            self.event_bus.publish(SessionEnded(self.conversation_context))
+            os._exit(0)
+        except asyncio.CancelledError:
+            # SIGTERM/SIGHUP: el handler canceló la task principal y el finally
+            # de run_async ya ejecutó cleanup_async (recursos liberados).
             self.event_bus.publish(SessionEnded(self.conversation_context))
             os._exit(0)
