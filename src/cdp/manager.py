@@ -17,8 +17,12 @@ Seguridad: el puerto escucha solo en loopback (comportamiento por defecto de
 Chromium) y la URL del socket lleva un token GUID no adivinable.
 """
 import asyncio
+import atexit
+import ctypes
 import os
 import shutil
+import signal
+import sys
 import tempfile
 from dataclasses import dataclass
 from typing import List, Optional
@@ -27,6 +31,19 @@ from src.utils.logging import get_logger
 from .client import CDPConnection, CDPError
 
 logger = get_logger("cdp.manager")
+
+
+def _setup_linux_pdeathsig() -> None:
+    """Configura el kernel de Linux (PR_SET_PDEATHSIG) para enviar SIGTERM al hijo
+    si el proceso padre (Atlas) muere, garantizando que el navegador no quede huérfano
+    incluso si Atlas termina con os._exit(0) o SIGKILL.
+    """
+    try:
+        # PR_SET_PDEATHSIG = 1 (sys/prctl.h)
+        libc = ctypes.CDLL("libc.so.6")
+        libc.prctl(1, signal.SIGTERM)
+    except Exception:
+        pass
 
 
 class BrowserNotFoundError(RuntimeError):
@@ -59,6 +76,7 @@ class BrowserManager:
         self.headless = headless
         # En headless el perfil es desechable por diseño (plan Fase 4/5).
         if headless:
+            self.cleanup_stale_headless()
             self.profile_dir = tempfile.mkdtemp(prefix="atlas-cdp-headless-")
         else:
             self.profile_dir = profile_dir or _DEFAULT_PROFILE
@@ -66,6 +84,7 @@ class BrowserManager:
         self._conn: Optional[CDPConnection] = None
         self._launch_lock = asyncio.Lock()
         self._owns_browser = False  # True si el proceso lo lanzó Atlas
+        self._atexit_registered = False
 
     # ------------------------------------------------------------------
     # Descubrimiento y lanzamiento
@@ -142,14 +161,20 @@ class BrowserManager:
             args.append("--disable-gpu")
         args.append("about:blank")
 
+        preexec_fn = _setup_linux_pdeathsig if sys.platform.startswith("linux") else None
+
         logger.info(f"Lanzando navegador CDP: {binary} (perfil: {self.profile_dir})")
         self._proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
             start_new_session=True,  # no heredar señales del terminal de Atlas
+            preexec_fn=preexec_fn,
         )
         self._owns_browser = True
+        if not self._atexit_registered:
+            atexit.register(self._sync_cleanup)
+            self._atexit_registered = True
 
     async def _wait_for_devtools(self, timeout: float = 25.0):
         deadline = asyncio.get_event_loop().time() + timeout
@@ -252,12 +277,57 @@ class BrowserManager:
             self._conn = None
         if self._owns_browser and self._proc and self._proc.returncode is None:
             try:
-                self._proc.terminate()
-                await asyncio.wait_for(self._proc.wait(), timeout=5.0)
-            except (asyncio.TimeoutError, ProcessLookupError):
+                # Al usar start_new_session=True, el PID es el líder del grupo de procesos (PGID).
+                # Matar el grupo completo asegura no dejar renderers, procesos GPU o crashpad sueltos.
+                pgid = os.getpgid(self._proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
+                await asyncio.wait_for(self._proc.wait(), timeout=3.0)
+            except (asyncio.TimeoutError, ProcessLookupError, PermissionError):
+                try:
+                    pgid = os.getpgid(self._proc.pid)
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                except Exception:
+                    try:
+                        self._proc.kill()
+                    except ProcessLookupError:
+                        pass
+            except Exception:
+                try:
+                    self._proc.terminate()
+                    await asyncio.wait_for(self._proc.wait(), timeout=3.0)
+                except Exception:
+                    pass
+        if self.headless and self.profile_dir and self.profile_dir.startswith(tempfile.gettempdir()):
+            shutil.rmtree(self.profile_dir, ignore_errors=True)
+
+    def _sync_cleanup(self) -> None:
+        """Limpieza síncrona registrada en atexit como salvaguarda adicional."""
+        if self._owns_browser and self._proc and self._proc.returncode is None:
+            try:
+                pgid = os.getpgid(self._proc.pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except Exception:
                 try:
                     self._proc.kill()
-                except ProcessLookupError:
+                except Exception:
                     pass
-        if self.headless and self.profile_dir.startswith(tempfile.gettempdir()):
+        if self.headless and self.profile_dir and self.profile_dir.startswith(tempfile.gettempdir()):
             shutil.rmtree(self.profile_dir, ignore_errors=True)
+
+    @classmethod
+    def cleanup_stale_headless(cls) -> int:
+        """Elimina directorios temporales de perfiles headless huérfanos en /tmp."""
+        cleaned = 0
+        try:
+            tmp = tempfile.gettempdir()
+            for name in os.listdir(tmp):
+                if name.startswith("atlas-cdp-headless-"):
+                    full = os.path.join(tmp, name)
+                    if os.path.isdir(full):
+                        shutil.rmtree(full, ignore_errors=True)
+                        cleaned += 1
+        except Exception as e:
+            logger.debug(f"Error limpiando perfiles headless obsoletos: {e}")
+        return cleaned
