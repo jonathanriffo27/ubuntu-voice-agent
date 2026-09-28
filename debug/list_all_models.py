@@ -3,7 +3,11 @@ import inspect
 from google import genai
 
 def save_models():
-    api_key = "AQ.Ab8RN6IdG1PfMbc4Db7DoczVPnwJjsu1Q3kTLw0J6CMQeMxdZw"
+    # La clave NUNCA se hardcodea (quedó filtrada en la historia de git una vez):
+    # exporta GEMINI_API_KEY o ponla en el .env del proyecto.
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise SystemExit("Falta GEMINI_API_KEY en el entorno (o en .env).")
     
     try:
         client = genai.Client(api_key=api_key)
