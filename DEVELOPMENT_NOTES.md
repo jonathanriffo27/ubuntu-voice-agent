@@ -42,6 +42,12 @@
 - **Fix:** `GeminiProvider` expone `_last_connect_used_handle` y `_track_provider_health` ignora los fallos cortos de sesiones abiertas con handle. En una caída real los intentos limpios consecutivos acumulan igual (≈2s extra) y disparan el fallback.
 - **Tests:** `test_fallo_con_handle_caducado_no_cuenta_para_el_fallback` y `test_caida_real_activa_el_fallback_tras_dos_fallos_limpios`.
 
+### 30.5 Suspensión de la sesión Live durante pausas prolongadas del micrófono
+- **Motivación:** con el micrófono en pausa no hay tráfico de audio; el servidor reapea la sesión idle cada ~50 min (`1006`/`1011`) y el loop reconectaba para nada (ruido en consola + cuota).
+- **Implementación:** `_pause_watcher_loop()` vigila `recorder.is_paused`; tras `voice.pause_suspend_after` (default 90s) cierra la sesión (`_suspend_session`) y el loop de sesión espera mientras `_session_suspended` (sin contar intentos). Al reanudar, el watcher limpia el flag y el loop reconecta solo (~0.5s de granularidad; `pause_suspend_after: 0` desactiva la función). El cierre se hace en el watcher y no en el setter de pausa para no acoplar el recorder al ciclo de vida del proveedor (Tab, `/mute` y HUD cambian el mismo estado).
+- **Detalles:** cierre idempotente para la carrera "conectó justo al suspender"; si el fallback está activo, la reconexión usa el proveedor activo; el `close()` de sesión se traduce en un `1006` interno que NO cuenta para la racha de disponibilidad.
+- **Tests:** `test_pausa_prolongada_suspende_y_reanuda_la_sesion`, `test_suspension_no_dispara_el_fallback` y la integración `test_run_async_suspende_y_reconecta_con_la_pausa`.
+
 ## 29. Voz Muda con Texto Visible: Interrupciones Fantasma del VAD de Gemini 3.8 (2026-09-19)
 
 - **Síntoma**: Atlas respondía (el texto de la transcripción se veía en terminal/HUD) pero **no se escuchaba nada** por los altavoces. Intermitente: frases cortas ocasionales sí sonaban.

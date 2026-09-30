@@ -97,6 +97,9 @@ provider/voz, repásalas antes de "simplificar":
     después) y mutear la fuente del sistema afecta a todas las apps y deja
     estado pegajoso si Atlas muere. El cierre debe esperar a un `read()` en
     vuelo (lock `_stream_lock`): cerrar en paralelo hace segfault a PortAudio.
+    Si la pausa supera `voice.pause_suspend_after` (90s), el watcher cierra
+    además la sesión Live (evita los reconnects idle cada ~50 min) y la
+    reconecta al reanudar; `0` desactiva esa suspensión.
 
 ## Convenciones
 

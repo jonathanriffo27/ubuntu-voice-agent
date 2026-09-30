@@ -70,6 +70,9 @@ class Assistant:
         self._unavailable_streak = 0
         self._provider_switch_requested = False
         self._probe_task: Optional[asyncio.Task] = None
+        # True mientras la sesión Live está suspendida por pausa prolongada del
+        # micrófono: el loop de sesión espera en vez de reconectar.
+        self._session_suspended = False
         self.registry = registry
         self.config = config
         self.knowledge_manager = knowledge_manager
@@ -665,6 +668,71 @@ class Assistant:
         except Exception:
             pass
 
+    # ------------------------------------------------------------------
+    # Suspensión de la sesión Live por pausa prolongada del micrófono
+    # ------------------------------------------------------------------
+
+    async def _suspend_session(self) -> None:
+        """Cierra la sesión Live si el micrófono lleva mucho en pausa.
+
+        Sin tráfico de audio el servidor reapea la sesión idle cada ~50 min
+        (1006/1011) y el loop reconectaba para nada. Suspendida, el loop espera;
+        al reanudar se reconecta. Idempotente: si una sesión terminó de conectar
+        justo al suspender, el próximo tick la vuelve a cerrar.
+        """
+        if not self._session_suspended:
+            self._session_suspended = True
+            logger.info("Sesión Live suspendida (micrófono en pausa prolongada); se reconectará al reanudar.")
+        session = self._active_session
+        close = getattr(session, "close", None) if session is not None else None
+        if close is not None:
+            try:
+                await close()
+            except Exception:
+                pass
+
+    def _resume_session(self) -> None:
+        """Marca el fin de la suspensión: el loop de sesión reconectará solo."""
+        if not self._session_suspended:
+            return
+        self._session_suspended = False
+        logger.info("Micrófono reanudado: reconectando sesión Live suspendida...")
+
+    async def _pause_watcher_loop(self) -> None:
+        """Vigila la pausa del micrófono y suspende/reanuda la sesión Live.
+
+        El cierre de la sesión se hace acá y no en el setter de pausa para no
+        acoplar el recorder al ciclo de vida del proveedor (Tab, /mute y HUD
+        cambian el mismo estado). El loop de sesión espera mientras
+        `_session_suspended` y reconecta en cuanto se limpia.
+        """
+        voice_cfg = getattr(self.config, "voice", None) if self.config else None
+        try:
+            suspend_after = float(getattr(voice_cfg, "pause_suspend_after", 90.0))
+        except (TypeError, ValueError):
+            suspend_after = 90.0
+        if suspend_after <= 0:
+            return  # desactivado por config
+
+        check_interval = max(0.05, min(2.0, suspend_after / 2.0))
+        paused_since: Optional[float] = None
+        try:
+            while True:
+                await asyncio.sleep(check_interval)
+                pausado = getattr(self.recorder, "is_paused", False) is True
+                if pausado:
+                    if paused_since is None:
+                        paused_since = time.monotonic()
+                    if (time.monotonic() - paused_since) >= suspend_after:
+                        await self._suspend_session()
+                else:
+                    paused_since = None
+                    self._resume_session()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"Watcher de pausa terminó: {e}")
+
     async def run_async(self):
         @contextlib.contextmanager
         def suppress_stderr():
@@ -820,6 +888,8 @@ class Assistant:
         terminal_task = asyncio.create_task(terminal_manager.listen())
         recorder_task = asyncio.create_task(self.recorder.listen(q_in, q_out, self.player))
         player_task = asyncio.create_task(self.player.play(q_out))
+        # Suspende la sesión Live si el micrófono queda en pausa prolongada.
+        pause_task = asyncio.create_task(self._pause_watcher_loop())
 
         attempt = 0
         backoff = self.reconnect_initial_backoff
@@ -829,6 +899,11 @@ class Assistant:
             # None = reintentos ilimitados: un asistente de voz no debe morir
             # permanentemente por una racha de fallos de conexión.
             while self.max_reconnect_attempts is None or attempt < self.max_reconnect_attempts:
+                # Pausa prolongada: la sesión se suspendió a propósito; esperar
+                # sin reconectar ni contar intentos (el watcher de pausa la
+                # reactiva al reanudar el micrófono).
+                while self._session_suspended:
+                    await asyncio.sleep(0.5)
                 attempt += 1
                 session_start_time = time.time()
                 if is_first_connection:
@@ -953,6 +1028,7 @@ class Assistant:
         finally:
             if self._probe_task and not self._probe_task.done():
                 self._probe_task.cancel()
+            pause_task.cancel()
             terminal_task.cancel()
             recorder_task.cancel()
             player_task.cancel()

@@ -19,6 +19,7 @@ voice:
   language: es-CL
   server_vad: false          # true = VAD nativo de Gemini cierra el turno. OBLIGATORIO en gemini-3.8 (se fuerza solo): audio_stream_end es ignorado por ese modelo
   affective_dialog: false    # true = voz con entonación afectiva/emocional nativa
+  pause_suspend_after: 90.0  # segundos con el mic en pausa antes de cerrar la sesión Live (evita reconnects idle; se reconecta al reanudar). 0 = desactivado
 
 memory:
   enabled: true

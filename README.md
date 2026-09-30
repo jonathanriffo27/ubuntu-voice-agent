@@ -76,7 +76,7 @@ graph TD
   - `Shift + Espacio`: Protocolo extendido `modifyOtherKeys`.
   - `Ctrl + Espacio`: Compatibilidad universal Linux VT100/ANSI.
   - `F2`: Tecla de función superior.
-- **Pausa sin mute del sistema**: al pausar, Atlas cierra el stream de captura (el `source-output` de PulseAudio desaparece al instante y el icono de micrófono de GNOME se apaga) y lo reabre al reanudar (~6ms). No se mutea la fuente del sistema: otras apps conservan el micrófono y un cierre inesperado de Atlas no deja estado pegajoso.
+- **Pausa sin mute del sistema**: al pausar, Atlas cierra el stream de captura (el `source-output` de PulseAudio desaparece al instante y el icono de micrófono de GNOME se apaga) y lo reabre al reanudar (~6ms). No se mutea la fuente del sistema: otras apps conservan el micrófono y un cierre inesperado de Atlas no deja estado pegajoso. Si la pausa supera `pause_suspend_after` (90s por defecto), además **suspende la sesión Live** (cierra el WebSocket, evitando reconnects idle cada ~50 min) y la reconecta automáticamente al reanudar.
 - **Ajuste de Sensibilidad VAD**: `Ctrl + Arriba` / `Ctrl + Abajo` (+500 / -500).
 - **Aprobación de 1 Tecla**: Presiona `[Enter]` en una línea vacía para aprobar solicitudes HITL pendientes, o escribe `n`/`no` para rechazar.
 - **Comandos Slash Rápidos**: `/mute`, `/help`, `/clear`.

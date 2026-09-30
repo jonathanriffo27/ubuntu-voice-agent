@@ -29,6 +29,7 @@ class _SesionFake(ProviderSession):
         self._error = error
         self.sent_texts = []
         self.cerrada = False
+        self._closed = asyncio.Event()
 
     async def send_audio(self, data: bytes, sample_rate: int = 16000) -> None:
         pass
@@ -47,12 +48,15 @@ class _SesionFake(ProviderSession):
 
     async def close(self) -> None:
         self.cerrada = True
+        self._closed.set()
 
     async def receive(self):
         if self._error:
             raise ConnectionResetError(self._error)
         yield TextChunk(text="ok")
-        await asyncio.Event().wait()  # sesión sana que queda viva
+        await self._closed.wait()
+        # Modela el WebSocket real: al cerrar, el receive termina con error.
+        raise ConnectionResetError("1006 None. abnormal closure [internal]")
 
 
 class _ProveedorFake(BaseProvider):
@@ -363,3 +367,107 @@ async def test_caida_real_activa_el_fallback_tras_dos_fallos_limpios():
     a._track_provider_health(time.time(), error, primario)   # limpio 2/2
     assert a._fallback_active is True
     a._probe_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_pausa_prolongada_suspende_y_reanuda_la_sesion():
+    """El watcher cierra la sesión Live tras N segundos de mic en pausa y la
+    marca para reconectar cuando el usuario reanuda."""
+    primario = _ProveedorFake("gemini-3.8-live")
+    a = _assistant(primario=primario, factory=lambda m: _ProveedorFake(m))
+    a.config.voice.pause_suspend_after = 0.05
+    sesion = _SesionFake()
+    a._active_session = sesion
+    a.recorder = MagicMock()
+    a.recorder.is_paused = True
+
+    tarea = asyncio.create_task(a._pause_watcher_loop())
+    try:
+        for _ in range(200):
+            if a._session_suspended:
+                break
+            await asyncio.sleep(0.01)
+        assert a._session_suspended is True
+        assert sesion.cerrada is True
+
+        a.recorder.is_paused = False
+        for _ in range(200):
+            if not a._session_suspended:
+                break
+            await asyncio.sleep(0.01)
+        assert a._session_suspended is False
+    finally:
+        tarea.cancel()
+        try:
+            await tarea
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_suspension_no_dispara_el_fallback():
+    primario = _ProveedorFake("gemini-3.8-live")
+    a = _assistant(primario=primario, factory=lambda m: _ProveedorFake(m))
+    a._session_suspended = True
+
+    a._track_provider_health(
+        time.time(), ConnectionResetError("1006 None. abnormal closure [internal]"), primario
+    )
+
+    assert a._unavailable_streak == 0
+    assert a._fallback_active is False
+
+
+@pytest.mark.asyncio
+async def test_run_async_suspende_y_reconecta_con_la_pausa():
+    """Integración: pausar suspende la sesión y el loop no reconecta; al
+    reanudar, se abre una sesión nueva."""
+    primario = _ProveedorFake("gemini-3.8-live")
+
+    def factory(modelo):
+        return _ProveedorFake(modelo)
+
+    a = _assistant(primario=primario, factory=factory)
+    a.config.voice.pause_suspend_after = 0.05
+    a.in_stream = MagicMock()
+    a.out_stream = MagicMock()
+    a.p = MagicMock()
+    a.recorder = MagicMock()
+    a.recorder.listen = AsyncMock()
+    a.player = MagicMock()
+    a.player.play = AsyncMock()
+
+    with patch("pyaudio.PyAudio"), \
+         patch("src.voice.recorder.AudioRecorder.load_wake_word", new_callable=AsyncMock), \
+         patch("src.voice.recorder.AudioRecorder.calibrate", new_callable=AsyncMock):
+        tarea = asyncio.create_task(a.run_async())
+        try:
+            for _ in range(300):
+                if primario.sesiones:
+                    break
+                await asyncio.sleep(0.01)
+            assert primario.sesiones, "debe conectar la sesión inicial"
+
+            a.recorder.is_paused = True
+            for _ in range(300):
+                if a._session_suspended:
+                    break
+                await asyncio.sleep(0.01)
+            assert a._session_suspended is True
+
+            sesiones_antes = len(primario.sesiones)
+            await asyncio.sleep(0.3)
+            assert len(primario.sesiones) == sesiones_antes  # no reconecta en pausa
+
+            a.recorder.is_paused = False
+            for _ in range(400):
+                if len(primario.sesiones) > sesiones_antes:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(primario.sesiones) > sesiones_antes, "debe reconectar al reanudar"
+        finally:
+            tarea.cancel()
+            try:
+                await tarea
+            except asyncio.CancelledError:
+                pass

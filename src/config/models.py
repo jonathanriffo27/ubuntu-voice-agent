@@ -25,6 +25,10 @@ class VoiceConfig:
     language: str = "es-CL"
     server_vad: bool = False  # True: delega detección de fin de turno al VAD nativo de Gemini
     affective_dialog: bool = False  # True: voz con entonación afectiva/emocional nativa
+    # Segundos con el micrófono en pausa antes de suspender la sesión Live
+    # (cierra el WebSocket y evita los reconnects idle cada ~50 min; al reanudar
+    # se reconecta solo). 0 o negativo = desactivado.
+    pause_suspend_after: float = 90.0
 
 
 @dataclass
