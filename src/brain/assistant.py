@@ -504,12 +504,17 @@ class Assistant:
         except Exception:
             return 2
 
-    def _track_provider_health(self, session_start_time: float, error: BaseException) -> None:
+    def _track_provider_health(self, session_start_time: float, error: BaseException,
+                               provider: Optional[BaseProvider] = None) -> None:
         """Cuenta fallos cortos de disponibilidad del primario y activa el fallback.
 
         Un 1011 tras una sesión larga es el idle-timeout normal del servidor: no
-        debe gatillar el fallback. Solo cuentan los fallos de sesiones cortas
-        (<15s) con señales de backend no disponible (1011/503/saturación).
+        debe gatillar el fallback. Tampoco cuenta un fallo corto de una sesión
+        abierta con handle de resumption: lo habitual es que el handle apunte a
+        una sesión ya muerta (el server la cerró por idle) y el intento limpio
+        siguiente funcione — el backend está sano (visto en logs reales: se
+        reportaba "no disponible 1/2" en cada corte idle con el mic pausado).
+        Solo cuentan fallos cortos de sesiones limpias.
         """
         if self._provider_switch_requested:
             # Cierre voluntario para volver al primario: no es un fallo.
@@ -518,6 +523,11 @@ class Assistant:
             return
 
         if self._fallback_active or not self._fallback_enabled():
+            return
+
+        provider = provider or self._active_provider
+        if getattr(provider, "_last_connect_used_handle", False):
+            logger.debug("Fallo corto con handle de resumption caducado: no cuenta para el fallback.")
             return
 
         if isinstance(error, BaseExceptionGroup):
@@ -896,7 +906,7 @@ class Assistant:
                             if not is_idle_timeout and any(not isinstance(exc, asyncio.CancelledError) for exc in eg.exceptions):
                                 raise eg
                             else:
-                                self._track_provider_health(session_start_time, eg)
+                                self._track_provider_health(session_start_time, eg, provider)
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     logger.info("Sesión finalizada por el usuario.")
                     break
@@ -921,7 +931,7 @@ class Assistant:
                         provider.reset_session_handle()
 
                     # Racha de fallos cortos de disponibilidad → fallback en caliente
-                    self._track_provider_health(session_start_time, e)
+                    self._track_provider_health(session_start_time, e, provider)
 
                     if is_idle_timeout:
                         logger.info("Sesión con el proveedor reiniciada (corte o error transitorio). Reconectando...")

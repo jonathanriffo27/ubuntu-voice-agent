@@ -86,7 +86,10 @@ provider/voz, repásalas antes de "simplificar":
     volver solo). Sondea cada `fallback_probe_interval` con una sesión
     desechable y, si el primario responde, cierra la sesión de fallback si está
     idle (`GeminiSession.close()`). Un 1011 tras sesión larga es el idle-timeout
-    normal del servidor y NO debe gatillar el fallback.
+    normal del servidor y NO debe gatillar el fallback; tampoco un fallo corto de
+    una sesión abierta con handle de resumption (handle caducado: el intento
+    limpio siguiente suele funcionar). `GeminiProvider._last_connect_used_handle`
+    le dice al Assistant cuáles ignorar.
 12. **Pausa del micrófono = liberar captura, no mutear el sistema**: la pausa
     (Tab / `/mute` / HUD) cierra el stream PyAudio (el `source-output` de
     PulseAudio desaparece al instante y GNOME apaga el indicador; reabrir tarda

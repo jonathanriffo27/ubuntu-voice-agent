@@ -60,6 +60,9 @@ class _ProveedorFake(BaseProvider):
         self.model_name = modelo
         self._error = error
         self.sesiones = []
+        # El Assistant lo consulta para no contar fallos de sesiones abiertas
+        # con handle de resumption caducado (señal falsa de backend caído).
+        self._last_connect_used_handle = False
 
     @asynccontextmanager
     async def connect(self, system_prompt: str, tools: list):
@@ -324,3 +327,39 @@ async def test_texto_sin_sesion_avisa_en_vez_de_ignorar(caplog):
 
     assert any("descartado" in r.message for r in caplog.records)
     assert any(isinstance(e, SystemNotification) and "no enviado" in e.message for e in eventos)
+
+
+@pytest.mark.asyncio
+async def test_fallo_con_handle_caducado_no_cuenta_para_el_fallback():
+    """Caso real observado con el micrófono en pausa: el server cierra la sesión
+    idle (1011/1006), el reintento con handle falla al instante y el intento
+    limpio siguiente conecta. Ese fallo NO es "backend no disponible"."""
+    primario = _ProveedorFake("gemini-3.8-live")
+    primario._last_connect_used_handle = True
+    a = _assistant(primario=primario, factory=lambda m: _ProveedorFake(m))
+
+    a._track_provider_health(time.time(), ConnectionResetError(ERROR_1011), primario)
+
+    assert a._unavailable_streak == 0
+    assert a._fallback_active is False
+
+
+@pytest.mark.asyncio
+async def test_caida_real_activa_el_fallback_tras_dos_fallos_limpios():
+    """En una caída real el intento con handle falla (no cuenta) y los intentos
+    limpios consecutivos sí acumulan hasta el umbral."""
+    primario = _ProveedorFake("gemini-3.8-live")
+    a = _assistant(primario=primario, factory=lambda m: _ProveedorFake(m))
+    error = ConnectionResetError(ERROR_1011)
+
+    primario._last_connect_used_handle = True
+    a._track_provider_health(time.time(), error, primario)   # handle caducado
+    assert a._unavailable_streak == 0
+
+    primario._last_connect_used_handle = False
+    a._track_provider_health(time.time(), error, primario)   # limpio 1/2
+    assert a._fallback_active is False
+
+    a._track_provider_health(time.time(), error, primario)   # limpio 2/2
+    assert a._fallback_active is True
+    a._probe_task.cancel()

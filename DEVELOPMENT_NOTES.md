@@ -36,6 +36,12 @@
 - **Investigación:** sonda headless con las 32 tools reales y un dato de memoria ("el código secreto es TITAN-42"): el patrón se reprodujo exacto (13940 → 7089 → 14917 → 15167) y el modelo **recordó TITAN-42** en el cuarto turno. `cached_content_token_count` fue 0 en todas las mediciones.
 - **Conclusión:** el `prompt_token_count` de Live 3.8 no es acumulativo del historial: reporta por ciclo de generación (en turnos con tool round-trip sube; en turnos simples vuelve a la base ~7-8k = system prompt + tools). NO hay pérdida de contexto. Se agregó `cached` al log de telemetría y un comentario en `gemini_session.py` para que un prompt "bajo" no se malinterprete.
 
+### 30.4 Falsos "no disponible" en cortes idle con el micrófono en pausa
+- **Síntoma:** con Atlas pausado, cada ~50 min el servidor cierra la sesión idle (`1011`/`1006`); el reintento con handle de resumption fallaba al instante y se registraba como "gemini-3.8-live no disponible (fallo corto 1/2)" en consola, aunque el intento limpio siguiente conectaba en ~2s (Atlas nunca se quedó sin voz).
+- **Causa:** el contador de disponibilidad no distinguía un fallo por handle caducado (la sesión apuntada ya no existe) de un backend realmente caído.
+- **Fix:** `GeminiProvider` expone `_last_connect_used_handle` y `_track_provider_health` ignora los fallos cortos de sesiones abiertas con handle. En una caída real los intentos limpios consecutivos acumulan igual (≈2s extra) y disparan el fallback.
+- **Tests:** `test_fallo_con_handle_caducado_no_cuenta_para_el_fallback` y `test_caida_real_activa_el_fallback_tras_dos_fallos_limpios`.
+
 ## 29. Voz Muda con Texto Visible: Interrupciones Fantasma del VAD de Gemini 3.8 (2026-09-19)
 
 - **Síntoma**: Atlas respondía (el texto de la transcripción se veía en terminal/HUD) pero **no se escuchaba nada** por los altavoces. Intermitente: frases cortas ocasionales sí sonaban.

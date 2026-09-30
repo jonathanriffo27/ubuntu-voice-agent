@@ -35,6 +35,11 @@ class GeminiProvider(BaseProvider):
         # Handle de session resumption: sobrevive a las reconexiones del WebSocket
         # para no perder el contexto conversacional (las sesiones mueren ~cada 15 min).
         self._session_handle: Optional[str] = None
+        # True si la última sesión se abrió con handle de resumption. Un fallo
+        # corto de esa sesión suele ser el handle caducado (la sesión apuntada ya
+        # no existe), no el backend caído: el Assistant lo usa para no contar ese
+        # fallo en la racha que dispara el fallback.
+        self._last_connect_used_handle: bool = False
 
     def _save_session_handle(self, handle: str) -> None:
         self._session_handle = handle
@@ -93,6 +98,7 @@ class GeminiProvider(BaseProvider):
             logger.info("Reconectando con session resumption (contexto conversacional preservado).")
         else:
             resumption = types.SessionResumptionConfig()
+        self._last_connect_used_handle = bool(self._session_handle)
 
         config = types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],
