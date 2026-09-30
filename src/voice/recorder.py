@@ -282,9 +282,12 @@ class AudioRecorder:
         frames_per_second = AUDIO_IN_RATE / CHUNK_SIZE
         max_silence_seconds = 0.9
         user_spoke = False
-        # Pre-roll (~380ms a 512 samples/frame) para no recortar el inicio de la
+        # Pre-roll (~770ms a 512 samples/frame) para no recortar el inicio de la
         # locución cuando el gate anti-ruido abre el stream al detectar voz.
-        pre_roll: deque = deque(maxlen=12)
+        # Antes eran 12 frames (~380ms) y el VAD local, al detectar tarde un
+        # arranque suave, cortaba la primera palabra: "dale, procede" → "da
+        # procede", "un mensaje..." → "un" (logs reales 2026-09-30).
+        pre_roll: deque = deque(maxlen=24)
 
         follow_up_timeout = float(getattr(self._voice_config, 'follow_up_timeout', 7.0)) if self._voice_config else 7.0
         activation_sound = bool(getattr(self._voice_config, 'activation_sound', True)) if self._voice_config else True
@@ -401,8 +404,12 @@ class AudioRecorder:
 
                     # Aislamiento de Eco Acústico (Half-Duplex seguro):
                     # Mientras Atlas habla o en los 350ms posteriores, mantener vivo el temporizador
-                    # para que la ventana de 7 segundos empiece estrictamente al terminar de hablar Atlas
+                    # para que la ventana de 7 segundos empiece estrictamente al terminar de hablar Atlas.
+                    # El audio NO se descarta: va al pre-roll (sin enviarse) para que, si el
+                    # usuario empezó a responder encima de Atlas y sigue hablando al terminar,
+                    # el onset posterior recupere el inicio de su frase en vez de perderlo.
                     if is_speaking or time_since_speech < 0.35:
+                        pre_roll.append(data)
                         silence_frames = 0
                         user_spoke = False
                         self._follow_up_last_active = time.time()

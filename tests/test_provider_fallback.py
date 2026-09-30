@@ -669,3 +669,16 @@ async def test_pregunta_aclaratoria_no_dispara_el_reclamo_multimedia():
             await tarea
         except asyncio.CancelledError:
             pass
+
+
+def test_corte_transitorio_reconoce_cierre_sin_frame():
+    """Bug real: 'no close frame received or sent' no matcheaba los keywords de
+    cierre transitorio y se logueaba como ERROR + backoff en vez de reconectar
+    en silencio (visto en logs 2026-09-30)."""
+    from src.brain.assistant import _es_corte_transitorio
+
+    assert _es_corte_transitorio("no close frame received or sent") is True
+    assert _es_corte_transitorio("1006 none. abnormal closure [internal]") is True
+    assert _es_corte_transitorio("1011 none. resource has been exhausted") is True
+    assert _es_corte_transitorio("1008 the operation was aborted") is True
+    assert _es_corte_transitorio("invalid argument: model not found") is False

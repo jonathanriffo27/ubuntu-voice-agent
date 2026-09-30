@@ -638,3 +638,61 @@ class TestPausaLiberaMicrofono:
 
         stream.close.assert_called_once()
         assert rec._capture_released is True
+
+
+class TestPreRoll:
+    """El pre-roll ampliado (~770ms) y la captura durante playback evitan que
+    las respuestas cortas pierdan el inicio ("da procede" ← "dale, procede",
+    "un" ← "un mensaje..."; logs reales 2026-09-30)."""
+
+    async def _pump_hasta(self, recorder, q_in, until, seconds=0.8):
+        task = asyncio.create_task(recorder.listen(q_in, asyncio.Queue(), recorder._test_player))
+        try:
+            deadline = time.monotonic() + seconds
+            while not until() and time.monotonic() < deadline:
+                await asyncio.sleep(0.005)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_frames_durante_playback_se_recuperan_al_onset(self):
+        """El usuario habla encima de Atlas: los frames gated van al pre-roll y
+        se envían cuando el VAD local confirma el onset (ya sin playback)."""
+        event_bus = EventBus()
+        mock_stream = MagicMock()
+        mock_stream.is_active.return_value = True
+        player = SimpleNamespace(is_speaking=True, last_speech_time=0.0)
+        lecturas = {"n": 0}
+
+        def fake_read(*args, **kwargs):
+            lecturas["n"] += 1
+            # 6 frames con Atlas hablando y los siguientes ya sin playback
+            player.is_speaking = lecturas["n"] <= 6
+            return bytes([lecturas["n"]]) * 1024
+
+        mock_stream.read.side_effect = fake_read
+
+        voice_config = MagicMock()
+        voice_config.mode = "always_on"
+        voice_config.server_vad = True
+        voice_config.follow_up_timeout = 60.0
+        voice_config.activation_sound = False
+        rec = AudioRecorder(mock_stream, event_bus, ConversationContext(), voice_config=voice_config)
+        rec._state = RecorderState.ACTIVE
+        rec._active_started = time.time()
+        rec._test_player = player
+        # VAD: recién detecta voz en la lectura 9 (Frame 7-8 = arranque suave)
+        rec.vad.is_speech = lambda data, current_threshold=None: lecturas["n"] >= 9
+
+        q_in = asyncio.Queue()
+        await self._pump_hasta(rec, q_in, until=lambda: q_in.qsize() >= 9)
+
+        items = [q_in.get_nowait() for _ in range(9)]
+        # Frames 1-6 (playback) + 7-8 (silencio previo al onset) se conservaron
+        assert items[0] == bytes([1]) * 1024
+        assert items[5] == bytes([6]) * 1024
+        assert items[8] == bytes([9]) * 1024

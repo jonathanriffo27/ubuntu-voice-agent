@@ -62,6 +62,12 @@
   2. Recuperación determinista: si al cerrar el turno hubo una frase con orden multimedia (`_MEDIA_ACTION_RE`) y `controlar_musica` no se llamó — y la respuesta no fue una pregunta aclaratoria — `_nudge_missed_action()` le pide al modelo ejecutarla. Guardas: una vez por frase + cooldown 20s. El flujo "reproduce música" → "¿qué te gustaría escuchar?" queda excluido por el filtro de "?" (no debe forzar una reproducción no elegida).
 - **Tests:** `test_orden_multimedia_sin_ejecutar_se_reclama`, `test_orden_multimedia_ejecutada_no_se_reclama`, `test_pregunta_aclaratoria_no_dispara_el_reclamo_multimedia`. Suite: 576 passed, 1 skipped.
 
+### 30.8 Captura de voz: pre-roll ampliado, audio durante playback y cierre "no close frame"
+- **Síntoma real (2026-09-30):** respuestas cortas del usuario llegaban cortadas al inicio ("dale, procede" → "da procede"; "un mensaje…" → "un") y Atlas respondía "No te escuché bien"; el usuario terminó escribiendo ("no funciona la captura de voz, tengo que escribirte"). Además, el cierre abrupto del WebSocket (`no close frame received or sent`) se logueaba como ERROR ruidoso y no se clasificaba como corte transitorio.
+- **Causas:** (1) pre-roll de solo 12 frames (~380ms): si el VAD local detecta tarde un arranque suave, la primera palabra se descarta; (2) el guard anti-eco descartaba los frames leídos mientras Atlas hablaba, así que una respuesta iniciada encima del playback perdía su comienzo; (3) los keywords de cierre transitorio no incluían "no close frame".
+- **Fix:** pre-roll a 24 frames (~770ms); los frames gated durante playback ahora van al pre-roll (sin enviarse) y se recuperan en el onset posterior; `_es_corte_transitorio()` centraliza los marcadores de cierre transitorio (incluye "no close frame") y se usa en `send_realtime`, `receive_and_route` y el loop de reconexión para reconectar en silencio.
+- **Tests:** `test_frames_durante_playback_se_recuperan_al_onset`, `test_corte_transitorio_reconoce_cierre_sin_frame`. Suite: 578 passed, 1 skipped.
+
 ## 29. Voz Muda con Texto Visible: Interrupciones Fantasma del VAD de Gemini 3.8 (2026-09-19)
 
 - **Síntoma**: Atlas respondía (el texto de la transcripción se veía en terminal/HUD) pero **no se escuchaba nada** por los altavoces. Intermitente: frases cortas ocasionales sí sonaban.

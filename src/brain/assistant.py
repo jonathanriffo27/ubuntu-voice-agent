@@ -47,6 +47,19 @@ _MEDIA_ACTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Cierres transitorios del WebSocket que se manejan con reconexión silenciosa.
+# "no close frame received or sent" es el cierre abrupto que reporta la librería
+# websockets (visto en logs reales): antes no matcheaba ningún keyword y se
+# logueaba como ERROR ruidoso en vez de reconectar en silencio.
+_TRANSIENT_CLOSE_MARKERS = (
+    "1008", "1011", "1006", "abnormal closure", "no close frame", "aborted",
+    "closed", "internal error", "go_away",
+)
+
+
+def _es_corte_transitorio(err_str: str) -> bool:
+    return any(k in err_str for k in _TRANSIENT_CLOSE_MARKERS)
+
 
 class Assistant:
     def __init__(
@@ -147,7 +160,10 @@ class Assistant:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error en send_realtime: {e}")
+                if _es_corte_transitorio(str(e).lower()):
+                    logger.debug(f"Corte transitorio en send_realtime: {e}")
+                else:
+                    logger.error(f"Error en send_realtime: {e}")
                 raise
 
     def _is_duplicate_call(self, name: str, args: dict) -> bool:
@@ -530,7 +546,7 @@ class Assistant:
             pass
         except Exception as e:
             err_msg = str(e)
-            if "1008" not in err_msg and "1011" not in err_msg and "1006" not in err_msg and "abnormal closure" not in err_msg.lower() and "aborted" not in err_msg.lower() and "connection" not in err_msg.lower() and "internal error" not in err_msg.lower():
+            if not _es_corte_transitorio(err_msg.lower()) and "connection" not in err_msg.lower():
                 self.event_bus.publish(
                     ErrorOccurred(self.conversation_context, error=err_msg, source="Assistant: receive_and_route")
                 )
@@ -1100,7 +1116,7 @@ class Assistant:
                                 err_str = str(exc).lower()
                                 # "go_away" = el servidor avisa que cerrará la
                                 # sesión (TTL ~15 min): reconexión transparente.
-                                if "1008" in err_str or "1011" in err_str or "1006" in err_str or "abnormal closure" in err_str or "aborted" in err_str or "closed" in err_str or "internal error" in err_str or "go_away" in err_str:
+                                if _es_corte_transitorio(err_str):
                                     is_idle_timeout = True
                                 else:
                                     logger.error(f"Fallo en tarea concurrente: {exc}")
@@ -1115,10 +1131,7 @@ class Assistant:
                 except Exception as e:
                     session_duration = time.time() - session_start_time
                     err_str = str(e).lower()
-                    is_idle_timeout = ("1008" in err_str or "1011" in err_str or "1006" in err_str
-                                       or "abnormal closure" in err_str or "aborted" in err_str
-                                       or "closed" in err_str or "internal error" in err_str
-                                       or "go_away" in err_str)
+                    is_idle_timeout = _es_corte_transitorio(err_str)
 
                     # Si la sesión estuvo viva y saludable por más de 15 segundos (ej. idle timeout),
                     # reiniciar el contador para no morir por inactividad prolongada natural.
