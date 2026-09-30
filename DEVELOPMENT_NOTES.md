@@ -55,6 +55,13 @@
 - **c) Confirmación dura:** `ejecutar_comando_confirmado` valida la última frase real del usuario (voz transcrita o texto de HUD/terminal, vía `ToolContext.last_user_utterance`) cuando el comando es destructivo (`shutdown`, `reboot`, `systemctl poweroff`, `rm -rf`, `mkfs`, `dd of=/dev/…`). Exige confirmación explícita y ≤60s (`confirmo`, `apruebo`, `ejecuta`, `adelante`, `dale`, `hazlo`); un "sí" pelado o una pregunta no alcanzan. Si falla, el comando NO se drena de la cola (sigue pendiente hasta su TTL) y el modelo recibe la instrucción de pedir la confirmación correcta. Comandos normales mantienen el flujo anterior.
 - **Tests:** `tests/test_shell_confirmation.py` (16) + nudge/cooldown/aviso de cuota en `tests/test_provider_fallback.py`. Suite completa: 573 passed, 1 skipped.
 
+### 30.7 Órdenes de acción ignoradas en turnos con consulta (música)
+- **Incidente real (2026-09-30):** el usuario preguntó por un psicólogo y pidió dos veces "ponle pausa" en el mismo turno; el modelo respondió la consulta y **no llamó a `controlar_musica`** — la música siguió sonando y el pedido más reciente quedó sepultado por la pregunta.
+- **Fix doble:**
+  1. Regla 11 del system prompt ("ÓRDENES VS CONSULTAS"): si el turno trae orden + consulta, primero ejecutar la orden con su herramienta y después responder; el pedido de acción más reciente tiene prioridad.
+  2. Recuperación determinista: si al cerrar el turno hubo una frase con orden multimedia (`_MEDIA_ACTION_RE`) y `controlar_musica` no se llamó — y la respuesta no fue una pregunta aclaratoria — `_nudge_missed_action()` le pide al modelo ejecutarla. Guardas: una vez por frase + cooldown 20s. El flujo "reproduce música" → "¿qué te gustaría escuchar?" queda excluido por el filtro de "?" (no debe forzar una reproducción no elegida).
+- **Tests:** `test_orden_multimedia_sin_ejecutar_se_reclama`, `test_orden_multimedia_ejecutada_no_se_reclama`, `test_pregunta_aclaratoria_no_dispara_el_reclamo_multimedia`. Suite: 576 passed, 1 skipped.
+
 ## 29. Voz Muda con Texto Visible: Interrupciones Fantasma del VAD de Gemini 3.8 (2026-09-19)
 
 - **Síntoma**: Atlas respondía (el texto de la transcripción se veía en terminal/HUD) pero **no se escuchaba nada** por los altavoces. Intermitente: frases cortas ocasionales sí sonaban.

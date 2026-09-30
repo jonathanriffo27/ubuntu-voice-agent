@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -35,6 +36,16 @@ from src.security.monitor import ActionMonitor, monitor_action_name
 from src.security.credentials import get_broker
 
 logger = get_logger("brain.assistant")
+
+# Órdenes multimedia que deben ejecutarse aunque el turno traiga además una
+# consulta. Bug real: "¿qué psicólogo conviene? … ponle pausa" → el modelo
+# respondió la consulta y dejó la música sonando sin llamar a `controlar_musica`.
+_MEDIA_ACTION_RE = re.compile(
+    r"\b(pausa|pausar|p[aá]usal[oa]|play|reproduce|reproducir|reanuda|siguiente|anterior|"
+    r"para la m[uú]sica|det[eé]n la m[uú]sica|stop|qu[eé] est[aá] sonando|"
+    r"pon(?:le|me)?\s+(?:m[uú]sica|algo))\b",
+    re.IGNORECASE,
+)
 
 
 class Assistant:
@@ -115,6 +126,9 @@ class Assistant:
         self._last_unanswered_nudge: float = 0.0
         self._last_nudged_text: str = ""
         self._last_quota_notice: float = 0.0
+        # Anti-spam del nudge por orden multimedia no ejecutada.
+        self._last_missed_action_text: str = ""
+        self._last_missed_action_nudge: float = 0.0
         # Referencia a la cola de reproducción (asignada en run_async) para que
         # send_text_message pueda cortar el audio viejo al instante.
         self._audio_out_queue: Optional[asyncio.Queue] = None
@@ -170,6 +184,28 @@ class Assistant:
         except Exception as e:
             logger.debug(f"No se pudo enviar el nudge del turno mudo: {e}")
 
+    async def _nudge_missed_action(self, session: ProviderSession, user_text: str) -> None:
+        """El turno traía una orden de reproducción y el modelo no llamó a
+        `controlar_musica` (respondió otra cosa y la música siguió sonando).
+
+        Guardas: una vez por frase distinta + cooldown de 20s.
+        """
+        ahora = time.time()
+        if user_text == self._last_missed_action_text and (ahora - self._last_missed_action_nudge) < 20.0:
+            return
+        self._last_missed_action_text = user_text
+        self._last_missed_action_nudge = ahora
+        logger.warning(f"🎵 Orden multimedia sin ejecutar en el turno; reclamando: {user_text[:80]}")
+        try:
+            await session.send_text(
+                f"[SISTEMA: El usuario dijo: \"{user_text}\". Contiene una orden de reproducción/pausa que "
+                "NO ejecutaste en el turno anterior. Ejecútala AHORA con la herramienta 'controlar_musica' "
+                "y confirma en una frase breve.]",
+                end_of_turn=True,
+            )
+        except Exception as e:
+            logger.debug(f"No se pudo enviar el nudge de acción multimedia: {e}")
+
     async def receive_and_route(
         self,
         session: ProviderSession,
@@ -188,7 +224,11 @@ class Assistant:
         # cierra sin respuesta para una frase fresca del usuario, se le pide al
         # modelo que responda (antes quedaba en silencio).
         user_text_turn: Optional[str] = None
+        user_texts_turn: List[str] = []
         ignored_interruption = False
+        # Herramientas llamadas en el turno: si una orden multimedia quedó sin
+        # ejecutar, se reclama al modelo al cerrar el turno.
+        tools_called_turn: set = set()
         # Diagnóstico de voz: contar los PCM que llegan del proveedor por turno
         # permite distinguir "el modelo no envía audio" de "el audio se borra
         # antes de reproducirse" (el texto SIEMPRE se ve porque llega por la
@@ -279,6 +319,7 @@ class Assistant:
                         if text_clean and text_clean != last_user_text:
                             last_user_text = text_clean
                             user_text_turn = text_clean
+                            user_texts_turn.append(text_clean)
                             self._last_user_utterance = text_clean
                             self._last_user_utterance_time = time.time()
                             self.event_bus.publish(SpeechRecognized(self.conversation_context, text=event.text))
@@ -300,8 +341,19 @@ class Assistant:
                         if (ignored_interruption and user_text_turn and not full_text
                                 and audio_chunks_turn == 0):
                             await self._nudge_unanswered_turn(session, user_text_turn)
+                        # Orden multimedia sin ejecutar: "…¿qué psicólogo? … ponle
+                        # pausa" → el modelo respondió la consulta y la música siguió.
+                        # No se reclama si la respuesta fue una pregunta aclaratoria
+                        # ("¿qué te gustaría escuchar?"), porque ahí no correspondía
+                        # ejecutar todavía.
+                        texto_accion = next((t for t in user_texts_turn if _MEDIA_ACTION_RE.search(t)), None)
+                        if (texto_accion and "controlar_musica" not in tools_called_turn
+                                and "?" not in full_text):
+                            await self._nudge_missed_action(session, texto_accion)
                         ignored_interruption = False
                         user_text_turn = None
+                        user_texts_turn.clear()
+                        tools_called_turn.clear()
                         current_response_text.clear()
                         last_user_text = None
                         self.event_bus.publish(TurnCompleted(self.conversation_context))
@@ -327,6 +379,7 @@ class Assistant:
                         responses: List[ToolResponseItem] = []
 
                         for fc in event.calls:
+                            tools_called_turn.add(fc.name)
                             if self._is_duplicate_call(fc.name, fc.args) and fc.name != "obtener_estado_sistema":
                                 responses.append(
                                     ToolResponseItem(

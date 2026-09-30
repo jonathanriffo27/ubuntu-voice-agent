@@ -18,7 +18,10 @@ import pytest
 from src.brain.assistant import Assistant
 from src.events.base import SystemNotification
 from src.events.bus import EventBus
-from src.providers.base import BaseProvider, ProviderSession, TextChunk, Interrupted, TurnComplete, UserTextChunk
+from src.providers.base import (
+    BaseProvider, ProviderSession, TextChunk, Interrupted, TurnComplete,
+    UserTextChunk, ToolCallItem, ToolCallRequest,
+)
 from src.tools.registry import ToolRegistry
 
 ERROR_1011 = "1011 None. Internal error encountered."
@@ -578,3 +581,91 @@ async def test_aviso_de_cuota_exhausted_con_cooldown():
 
     if a._probe_task:
         a._probe_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_orden_multimedia_sin_ejecutar_se_reclama():
+    """Caso real: en un mismo turno el usuario preguntó por un psicólogo y pidió
+    dos veces 'ponle pausa'; el modelo respondió la consulta y la música siguió
+    sonando sin llamar a controlar_musica."""
+    a = _assistant(factory=lambda m: _ProveedorFake(m))
+    a.recorder = MagicMock()
+    a.recorder.last_local_voice_time = 0.0
+    a._last_user_text_input = 0.0
+    sesion = _SesionConEventos([
+        UserTextChunk(text="Yo vi cuando un niño tiene una consulta complicada, ¿qué psicólogo conviene ver?"),
+        UserTextChunk(text="¿Escuchaste? Ojalá con enfoque cognitivo conductual."),
+        UserTextChunk(text="Ponle pausa."),
+        UserTextChunk(text="Alexa, ponle pausa."),
+        TextChunk(text="Para niños conviene un psicólogo infantil."),
+        TurnComplete(),
+    ])
+
+    tarea = asyncio.create_task(a.receive_and_route(sesion, asyncio.Queue(), asyncio.Queue()))
+    try:
+        for _ in range(200):
+            if sesion.sent_texts:
+                break
+            await asyncio.sleep(0.01)
+        assert sesion.sent_texts, "debe reclamar la orden multimedia no ejecutada"
+        reclamo = sesion.sent_texts[0][0]
+        assert "NO ejecutaste" in reclamo
+        assert "controlar_musica" in reclamo
+        assert "pausa" in reclamo.lower()
+    finally:
+        tarea.cancel()
+        try:
+            await tarea
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_orden_multimedia_ejecutada_no_se_reclama():
+    """Si el modelo SÍ llamó a controlar_musica en el turno, no hay reclamo."""
+    a = _assistant(factory=lambda m: _ProveedorFake(m))
+    a.recorder = MagicMock()
+    a.recorder.last_local_voice_time = 0.0
+    a._last_user_text_input = 0.0
+    sesion = _SesionConEventos([
+        UserTextChunk(text="Ponle pausa."),
+        ToolCallRequest(calls=[ToolCallItem(id="1", name="controlar_musica", args={"accion": "pausar"})]),
+        TurnComplete(),
+    ])
+
+    tarea = asyncio.create_task(a.receive_and_route(sesion, asyncio.Queue(), asyncio.Queue()))
+    try:
+        await asyncio.sleep(0.2)
+        assert not any("NO ejecutaste" in t for t, _ in sesion.sent_texts)
+    finally:
+        tarea.cancel()
+        try:
+            await tarea
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_pregunta_aclaratoria_no_dispara_el_reclamo_multimedia():
+    """Si Atlas respondió preguntando qué reproducir (flujo normal observado),
+    el reclamo NO debe forzar una reproducción que el usuario no eligió."""
+    a = _assistant(factory=lambda m: _ProveedorFake(m))
+    a.recorder = MagicMock()
+    a.recorder.last_local_voice_time = 0.0
+    a._last_user_text_input = 0.0
+    sesion = _SesionConEventos([
+        UserTextChunk(text="reproduce musica"),
+        TextChunk(text="Por supuesto, ¿qué te gustaría escuchar?"),
+        TurnComplete(),
+    ])
+
+    tarea = asyncio.create_task(a.receive_and_route(sesion, asyncio.Queue(), asyncio.Queue()))
+    try:
+        await asyncio.sleep(0.2)
+        assert not any("NO ejecutaste" in t for t, _ in sesion.sent_texts)
+    finally:
+        tarea.cancel()
+        try:
+            await tarea
+        except asyncio.CancelledError:
+            pass
