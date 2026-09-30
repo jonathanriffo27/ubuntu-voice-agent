@@ -48,6 +48,13 @@
 - **Detalles:** cierre idempotente para la carrera "conectó justo al suspender"; si el fallback está activo, la reconexión usa el proveedor activo; el `close()` de sesión se traduce en un `1006` interno que NO cuenta para la racha de disponibilidad.
 - **Tests:** `test_pausa_prolongada_suspende_y_reanuda_la_sesion`, `test_suspension_no_dispara_el_fallback` y la integración `test_run_async_suspende_y_reconecta_con_la_pausa`.
 
+### 30.6 Turnos mudos, aviso de cuota y confirmación dura de comandos destructivos
+- **Contexto real (2026-09-30):** con `sudo shutdown -h now` propuesto tras pedir confirmación, el usuario dijo una frase ambigua ("¿Quieres irte a la casa?"); el server emitió `interrupted` y el turno cerró con **0 chunks** (la generación fue cancelada en el servidor), dejando la pregunta sin respuesta. La barrera de ejecución era el juicio del modelo + TTL de 30s de la cola de comandos.
+- **a) Turno mudo:** si se ignora un `interrupted` (falso positivo del VAD) y el `TurnComplete` cierra sin texto ni audio, pero había una frase fresca del usuario en ese turno, `_nudge_unanswered_turn()` le reenvía un `[SISTEMA: …]` al modelo para que responda. Guardas: una vez por frase distinta + cooldown de 20s (evita bucles si el server vuelve a interrumpir el nudge).
+- **b) Cuota:** `1011 Resource has been exhausted` ahora se distingue como límite de cuota/velocidad: warning + `SystemNotification` (cooldown 5 min) en vez del reconnect silencioso. Sigue contando para el fallback (otro modelo puede tener cuota propia).
+- **c) Confirmación dura:** `ejecutar_comando_confirmado` valida la última frase real del usuario (voz transcrita o texto de HUD/terminal, vía `ToolContext.last_user_utterance`) cuando el comando es destructivo (`shutdown`, `reboot`, `systemctl poweroff`, `rm -rf`, `mkfs`, `dd of=/dev/…`). Exige confirmación explícita y ≤60s (`confirmo`, `apruebo`, `ejecuta`, `adelante`, `dale`, `hazlo`); un "sí" pelado o una pregunta no alcanzan. Si falla, el comando NO se drena de la cola (sigue pendiente hasta su TTL) y el modelo recibe la instrucción de pedir la confirmación correcta. Comandos normales mantienen el flujo anterior.
+- **Tests:** `tests/test_shell_confirmation.py` (16) + nudge/cooldown/aviso de cuota en `tests/test_provider_fallback.py`. Suite completa: 573 passed, 1 skipped.
+
 ## 29. Voz Muda con Texto Visible: Interrupciones Fantasma del VAD de Gemini 3.8 (2026-09-19)
 
 - **Síntoma**: Atlas respondía (el texto de la transcripción se veía en terminal/HUD) pero **no se escuchaba nada** por los altavoces. Intermitente: frases cortas ocasionales sí sonaban.

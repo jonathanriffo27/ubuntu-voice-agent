@@ -24,6 +24,40 @@ def _rewrite_cmd_to_venv(cmd: str) -> str:
         cmd = re.sub(pattern, replacement, cmd)
     return cmd
 
+
+# Comandos destructivos del sistema: además de que el modelo los proponga, la
+# última frase del usuario debe contener una confirmación EXPLÍCITA. La barrera
+# no depende del juicio del modelo (una frase ambigua como "¿quieres irte a la
+# casa?" no puede gatillar un `sudo shutdown`).
+_DANGEROUS_PATTERNS = [
+    r"\b(?:shutdown|reboot|poweroff|halt)\b",
+    r"\bsystemctl\s+(?:poweroff|reboot|halt|suspend|hibernate)\b",
+    r"\b(?:init|telinit)\s+[06]\b",
+    r"\brm\s+-[a-z]*r[a-z]*f\b",
+    r"\brm\s+-[a-z]*f[a-z]*r\b",
+    r"\bmkfs(?:\.\w+)?\b",
+    r"\bdd\b[^\n]*of=/dev/",
+]
+# Afirmaciones inequívocas (sin "sí" pelado: puede responder a otra pregunta).
+_EXPLICIT_CONFIRMATION_PATTERN = re.compile(
+    r"\b(?:confirmo|confirmado|apruebo|aprobado|ejecuta|ejecútalo|ejecutalo|procede|adelante|dale|hazlo)\b",
+    re.IGNORECASE,
+)
+CONFIRMATION_WINDOW_SECONDS = 60.0
+
+
+def _is_dangerous_command(cmd: str) -> bool:
+    return any(re.search(p, cmd, re.IGNORECASE) for p in _DANGEROUS_PATTERNS)
+
+
+def _has_explicit_confirmation(text: str, ts: float) -> bool:
+    """True si la última frase del usuario es reciente y confirma sin ambigüedad."""
+    if not text or not ts:
+        return False
+    if time.time() - ts > CONFIRMATION_WINDOW_SECONDS:
+        return False
+    return bool(_EXPLICIT_CONFIRMATION_PATTERN.search(text))
+
 class CommandResult:
     def __init__(self, exit_code: int, stdout: str, stderr: str, duration_ms: int):
         self.exit_code = exit_code
@@ -164,12 +198,18 @@ class ProponerComandoTool(BaseTool):
             extra = f" (encolado: hay {pendientes} comandos pendientes de confirmación)"
         print(f"\n⚠️ [ATLAS PROPONE]: {comando}{extra}\n (Esperando confirmación...)")
 
+        if _is_dangerous_command(comando):
+            espera = (
+                "Espera a escuchar la confirmación EXPLÍCITA del usuario antes de ejecutarlo: para "
+                "comandos destructivos debe decir 'confirmo', 'apruebo' o 'ejecuta' (un 'sí' a otra "
+                "pregunta o una frase ambigua NO alcanza)."
+            )
+        else:
+            espera = "Espera a escuchar la confirmación por voz del usuario antes de ejecutarlo."
+
         return ToolResult(
             success=True,
-            content=(
-                f"Comando '{comando}' propuesto.{extra} DETENTE AQUÍ. "
-                "Espera a escuchar la confirmación por voz del usuario antes de ejecutarlo."
-            )
+            content=f"Comando '{comando}' propuesto.{extra} DETENTE AQUÍ. {espera}"
         )
 
 class EjecutarComandoTool(BaseTool):
@@ -194,9 +234,34 @@ class EjecutarComandoTool(BaseTool):
         if not config.enabled:
             return ToolResult(success=False, content="La herramienta de shell está deshabilitada.")
 
+        pendientes = self.state.list_pending()
+        if not pendientes:
+            print("\n❌ [ATLAS ERROR]: Se intentó confirmar sin comando pendiente o ya expiró.")
+            return ToolResult(
+                success=False,
+                content="No hay un comando pendiente válido o ya expiró. Vuelve a proponerlo."
+            )
+
+        # Confirmación dura para comandos destructivos: valida la última frase
+        # REAL del usuario (voz transcrita o texto de HUD/terminal), no lo que el
+        # modelo crea haber entendido. Si no hay confirmación explícita, el
+        # comando NO se extrae de la cola y sigue pendiente hasta su TTL.
+        if _is_dangerous_command(pendientes[0]):
+            ultima_frase = getattr(context, "last_user_utterance", "")
+            ultimo_ts = getattr(context, "last_user_utterance_time", 0.0)
+            if not _has_explicit_confirmation(ultima_frase, ultimo_ts):
+                print(f"\n🛑 [CONFIRMACIÓN INSUFICIENTE]: {pendientes[0]}")
+                return ToolResult(
+                    success=False,
+                    content=(
+                        "NO ejecuté nada: no detecté una confirmación explícita del usuario para un comando "
+                        "destructivo. Pídele que diga 'confirmo', 'apruebo' o 'ejecuta' (una frase ambigua o "
+                        "un 'sí' a otra pregunta no cuenta) e inténtalo de nuevo tras su respuesta."
+                    ),
+                )
+
         cmd = self.state.get_pending()
         if not cmd:
-            print("\n❌ [ATLAS ERROR]: Se intentó confirmar sin comando pendiente o ya expiró.")
             return ToolResult(
                 success=False,
                 content="No hay un comando pendiente válido o ya expiró. Vuelve a proponerlo."

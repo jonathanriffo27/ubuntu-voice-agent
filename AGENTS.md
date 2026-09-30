@@ -80,6 +80,9 @@ provider/voz, repásalas antes de "simplificar":
 10. **Seguridad**: `.env` y `latest_session.log` están en `.gitignore` — nunca
     commitearlos. El CredentialBroker redacta secretos de todo output de tools;
     `leer_archivo_proyecto` deniega `.env`/claves/binarios (defensa en profundidad).
+    La confirmación de comandos destructivos es dura: `ejecutar_comando_confirmado`
+    valida la última frase real del usuario (confirmo/apruebo/ejecuta, ≤60s) — una
+    frase ambigua o un "sí" a otra pregunta no ejecuta (`tests/test_shell_confirmation.py`).
 11. **Fallback de proveedor**: si `gemini-3.8-live` devuelve `1011`/`503` en
     sesiones cortas (<15s), el Assistant cambia a `provider.fallback_model`
     **solo en runtime** — jamás sobreescribir `config.yaml` (el primario debe

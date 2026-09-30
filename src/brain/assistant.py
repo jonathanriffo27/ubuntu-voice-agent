@@ -106,6 +106,15 @@ class Assistant:
         # Sirve para el barge-in local por teclado y para validar interrupciones
         # del servidor que realmente provienen de una entrada del usuario.
         self._last_user_text_input: float = 0.0
+        # Última frase del usuario (voz o texto) y su marca temporal: la
+        # confirmación dura de comandos destructivos la valida el TOOL, no el
+        # modelo (evita que una frase ambigua se lea como "apruebo").
+        self._last_user_utterance: str = ""
+        self._last_user_utterance_time: float = 0.0
+        # Anti-spam del nudge por turno mudo y del aviso de cuota agotada.
+        self._last_unanswered_nudge: float = 0.0
+        self._last_nudged_text: str = ""
+        self._last_quota_notice: float = 0.0
         # Referencia a la cola de reproducción (asignada en run_async) para que
         # send_text_message pueda cortar el audio viejo al instante.
         self._audio_out_queue: Optional[asyncio.Queue] = None
@@ -138,6 +147,29 @@ class Assistant:
         self._duplicate_guard[call_key] = count + 1
         return count > 0
 
+    async def _nudge_unanswered_turn(self, session: ProviderSession, user_text: str) -> None:
+        """El usuario habló, el server canceló la generación por un `interrupted`
+        que ignoramos (falso positivo del VAD) y el turno cerró sin respuesta:
+        pedirle al modelo que responda, en vez de dejar un silencio.
+
+        Guardas: una vez por frase distinta y con cooldown de 20s, para no entrar
+        en bucle si el server vuelve a interrumpir la respuesta del nudge.
+        """
+        ahora = time.time()
+        if user_text == self._last_nudged_text and (ahora - self._last_unanswered_nudge) < 20.0:
+            return
+        self._last_nudged_text = user_text
+        self._last_unanswered_nudge = ahora
+        logger.warning(f"↩️ Turno mudo tras interrupción ignorada; pidiendo respuesta para: {user_text[:80]}")
+        try:
+            await session.send_text(
+                f"[SISTEMA: El usuario dijo: \"{user_text}\". Su turno quedó sin respuesta por una "
+                "interrupción del VAD. Respóndele ahora, breve.]",
+                end_of_turn=True,
+            )
+        except Exception as e:
+            logger.debug(f"No se pudo enviar el nudge del turno mudo: {e}")
+
     async def receive_and_route(
         self,
         session: ProviderSession,
@@ -152,6 +184,11 @@ class Assistant:
         # para no imprimir "🎙️ Tú (voz): …" dos veces. Se reinicia por turno,
         # de modo que repetir la misma pregunta en turnos distintos sí se muestra.
         last_user_text: Optional[str] = None
+        # Turno mudo: si ignoramos un `interrupted` (falso positivo) y el turno
+        # cierra sin respuesta para una frase fresca del usuario, se le pide al
+        # modelo que responda (antes quedaba en silencio).
+        user_text_turn: Optional[str] = None
+        ignored_interruption = False
         # Diagnóstico de voz: contar los PCM que llegan del proveedor por turno
         # permite distinguir "el modelo no envía audio" de "el audio se borra
         # antes de reproducirse" (el texto SIEMPRE se ve porque llega por la
@@ -181,6 +218,7 @@ class Assistant:
                                 "⚡ Interrupción del servidor SIN voz local reciente → ignorada "
                                 "(falso positivo del VAD); el audio en cola sigue reproduciéndose."
                             )
+                            ignored_interruption = True
                             # No se vacía la cola ni el texto; solo se reabre el
                             # micrófono (el gate anti-ruido del recorder evita que
                             # el ambiente vuelva a disparar interrupciones).
@@ -240,6 +278,9 @@ class Assistant:
                         text_clean = event.text.strip()
                         if text_clean and text_clean != last_user_text:
                             last_user_text = text_clean
+                            user_text_turn = text_clean
+                            self._last_user_utterance = text_clean
+                            self._last_user_utterance_time = time.time()
                             self.event_bus.publish(SpeechRecognized(self.conversation_context, text=event.text))
 
                     elif isinstance(event, TextChunk):
@@ -254,6 +295,13 @@ class Assistant:
                         full_text = "".join(current_response_text).strip()
                         if full_text:
                             self.event_bus.publish(ResponseGenerated(self.conversation_context, text=full_text))
+                        # Turno mudo tras una interrupción ignorada: había frase
+                        # del usuario y no salió ni texto ni audio → pedir respuesta.
+                        if (ignored_interruption and user_text_turn and not full_text
+                                and audio_chunks_turn == 0):
+                            await self._nudge_unanswered_turn(session, user_text_turn)
+                        ignored_interruption = False
+                        user_text_turn = None
                         current_response_text.clear()
                         last_user_text = None
                         self.event_bus.publish(TurnCompleted(self.conversation_context))
@@ -339,7 +387,9 @@ class Assistant:
                                     context = ToolContext(
                                         config=self.config,
                                         event_bus=self.event_bus,
-                                        conversation_context=self.conversation_context
+                                        conversation_context=self.conversation_context,
+                                        last_user_utterance=self._last_user_utterance,
+                                        last_user_utterance_time=self._last_user_utterance_time
                                     )
                                     tool_result = await tool.execute(context, **fc.args)
 
@@ -444,6 +494,8 @@ class Assistant:
         if self._active_session:
             logger.info(f"💬 [HUD -> Atlas]: {text}")
             self._last_user_text_input = time.time()
+            self._last_user_utterance = text
+            self._last_user_utterance_time = self._last_user_text_input
             # Barge-in local por teclado: si Atlas seguía hablando de la respuesta
             # anterior, se corta al instante. Sin esto, el audio nuevo se encolaba
             # DETRÁS de la cola vieja y el retraso percibido se acumulaba turno a
@@ -525,18 +577,23 @@ class Assistant:
             logger.info("Reconexión voluntaria para volver al modelo principal.")
             return
 
-        if self._fallback_active or not self._fallback_enabled():
-            return
-
         provider = provider or self._active_provider
-        if getattr(provider, "_last_connect_used_handle", False):
-            logger.debug("Fallo corto con handle de resumption caducado: no cuenta para el fallback.")
-            return
-
         if isinstance(error, BaseExceptionGroup):
             err_str = " ".join(str(exc) for exc in error.exceptions).lower()
         else:
             err_str = str(error).lower()
+
+        # Cuota/rate limit: avisar al usuario (con cooldown). Antes este 1011 se
+        # trataba como corte transitorio silencioso y solo se veía "no responde".
+        if "resource has been exhausted" in err_str or "quota" in err_str:
+            self._notify_quota_exhausted()
+
+        if self._fallback_active or not self._fallback_enabled():
+            return
+
+        if getattr(provider, "_last_connect_used_handle", False):
+            logger.debug("Fallo corto con handle de resumption caducado: no cuenta para el fallback.")
+            return
 
         is_unavailable = any(k in err_str for k in ("1011", "503", "high demand", "unavailable", "internal error"))
         short_session = (time.time() - session_start_time) < 15.0
@@ -552,6 +609,23 @@ class Assistant:
         elif not short_session:
             # Sesión larga: el primario estaba sano, la racha se descarta.
             self._unavailable_streak = 0
+
+    def _notify_quota_exhausted(self) -> None:
+        """Avisa (con cooldown de 5 min) que Gemini devolvió límite de cuota/velocidad.
+
+        Antes este `1011 Resource has been exhausted` se trataba como corte
+        transitorio silencioso: el usuario solo percibía que Atlas no respondía.
+        """
+        ahora = time.time()
+        if ahora - self._last_quota_notice < 300.0:
+            return
+        self._last_quota_notice = ahora
+        mensaje = (
+            "Gemini alcanzó el límite de cuota/velocidad (1011 resource exhausted). "
+            "Atlas reintentará automáticamente cuando se libere."
+        )
+        logger.warning(f"⚠️ {mensaje}")
+        self.event_bus.publish(SystemNotification(self.conversation_context, message=mensaje, kind="model"))
 
     def _is_session_idle(self) -> bool:
         """True si no hay turno, tool ni audio en curso (apto para reconectar)."""

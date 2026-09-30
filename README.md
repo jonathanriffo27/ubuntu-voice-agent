@@ -104,6 +104,7 @@ graph TD
   - **Voz**: Atlas pregunta *"El agente solicita permiso para crear X. ¿Lo apruebas?"* y reconoce *"Apruebo"*, *"Confirmar"*, *"Rechaza el cambio"*.
   - **Web HUD**: Banner interactivo con vista previa del código y botones `[✅ Aprobar]` / `[❌ Rechazar]`.
   - **Terminal**: Aprobación directa con `[Enter]` en línea vacía.
+- **Confirmación dura para comandos destructivos**: `shutdown`, `reboot`, `rm -rf`, `mkfs`, `dd`… no se ejecutan solo porque el modelo crea que aceptaste: el tool valida la última frase real del usuario (voz transcrita o texto) y exige una confirmación explícita y reciente (*"confirmo"*, *"apruebo"*, *"ejecuta"*). Una frase ambigua o un "sí" a otra pregunta no alcanza.
 
 ### 6. 🔄 Recarga en Caliente (*Hot-Reloading*)
 - Las nuevas herramientas creadas por el subagente se inyectan en el `ToolRegistry` activo en memoria instantáneamente sin reiniciar el proceso.

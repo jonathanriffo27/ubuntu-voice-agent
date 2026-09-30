@@ -10,6 +10,11 @@ class ToolContext:
     config: AtlasConfig
     event_bus: EventBus = None
     conversation_context: ConversationContext = None
+    # Último mensaje del usuario (voz transcrita o texto de HUD/terminal) y su
+    # timestamp. Lo usa la confirmación dura de comandos destructivos: la
+    # barrera no puede depender solo de lo que el modelo crea haber entendido.
+    last_user_utterance: str = ""
+    last_user_utterance_time: float = 0.0
 
 @dataclass
 class ToolResult:

@@ -18,7 +18,7 @@ import pytest
 from src.brain.assistant import Assistant
 from src.events.base import SystemNotification
 from src.events.bus import EventBus
-from src.providers.base import BaseProvider, ProviderSession, TextChunk
+from src.providers.base import BaseProvider, ProviderSession, TextChunk, Interrupted, TurnComplete, UserTextChunk
 from src.tools.registry import ToolRegistry
 
 ERROR_1011 = "1011 None. Internal error encountered."
@@ -471,3 +471,110 @@ async def test_run_async_suspende_y_reconecta_con_la_pausa():
                 await tarea
             except asyncio.CancelledError:
                 pass
+
+
+class _SesionConEventos(ProviderSession):
+    """Emite eventos prefijados y luego queda viva (el test cancela la task)."""
+
+    def __init__(self, eventos):
+        self._eventos = eventos
+        self.sent_texts = []
+        self.cerrada = False
+
+    async def send_audio(self, data: bytes, sample_rate: int = 16000) -> None:
+        pass
+
+    async def send_video(self, data: bytes, mime_type: str = "image/jpeg") -> None:
+        pass
+
+    async def send_text(self, text: str, end_of_turn: bool = False) -> None:
+        self.sent_texts.append((text, end_of_turn))
+
+    async def end_turn(self) -> None:
+        pass
+
+    async def send_tool_response(self, responses) -> None:
+        pass
+
+    async def close(self) -> None:
+        self.cerrada = True
+
+    async def receive(self):
+        for ev in self._eventos:
+            yield ev
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_turno_mudo_tras_interrupcion_ignorada_pide_respuesta():
+    """Caso real: el server cancela la generación con un `interrupted` que
+    ignoramos (sin voz local) y el turno cierra sin audio ni texto; el usuario
+    quedaba en silencio. Ahora se le pide al modelo responder su frase."""
+    a = _assistant(factory=lambda m: _ProveedorFake(m))
+    a.recorder = MagicMock()
+    a.recorder.last_local_voice_time = 0.0
+    a._last_user_text_input = 0.0
+    sesion = _SesionConEventos([
+        Interrupted(),
+        UserTextChunk(text="¿Quieres irte a la casa?"),
+        TurnComplete(),
+    ])
+
+    tarea = asyncio.create_task(a.receive_and_route(sesion, asyncio.Queue(), asyncio.Queue()))
+    try:
+        for _ in range(200):
+            if any("quedó sin respuesta" in t for t, _ in sesion.sent_texts):
+                break
+            await asyncio.sleep(0.01)
+        assert any("quedó sin respuesta" in t for t, _ in sesion.sent_texts)
+        assert "¿Quieres irte a la casa?" in sesion.sent_texts[0][0]
+    finally:
+        tarea.cancel()
+        try:
+            await tarea
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_nudge_no_se_duplica_para_la_misma_frase():
+    a = _assistant(factory=lambda m: _ProveedorFake(m))
+    a.recorder = MagicMock()
+    a.recorder.last_local_voice_time = 0.0
+    a._last_user_text_input = 0.0
+    sesion = _SesionConEventos([
+        Interrupted(), UserTextChunk(text="hola"), TurnComplete(),
+        Interrupted(), UserTextChunk(text="hola"), TurnComplete(),
+    ])
+
+    tarea = asyncio.create_task(a.receive_and_route(sesion, asyncio.Queue(), asyncio.Queue()))
+    try:
+        await asyncio.sleep(0.2)
+        nudges = [t for t, _ in sesion.sent_texts if "quedó sin respuesta" in t]
+        assert len(nudges) == 1  # cooldown por la misma frase
+    finally:
+        tarea.cancel()
+        try:
+            await tarea
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_aviso_de_cuota_exhausted_con_cooldown():
+    eventos = []
+    bus = EventBus()
+    bus.subscribe_all(lambda e: eventos.append(e))
+    a = _assistant(bus=bus)
+    error = ConnectionResetError("1011 None. Resource has been exhausted (e.g. check quota).")
+
+    a._track_provider_health(time.time(), error, a._primary_provider)
+    cuota = [e for e in eventos if isinstance(e, SystemNotification) and "cuota" in e.message.lower()]
+    assert len(cuota) == 1
+
+    a._track_provider_health(time.time(), error, a._primary_provider)
+    cuota = [e for e in eventos if isinstance(e, SystemNotification) and "cuota" in e.message.lower()]
+    assert len(cuota) == 1  # cooldown: no spamea en cada reintento
+
+    if a._probe_task:
+        a._probe_task.cancel()
